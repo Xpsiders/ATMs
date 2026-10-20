@@ -12,7 +12,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 |---|---|---|
 | Go module, API entry point, chi router | Done | |
 | Environment configuration and PostgreSQL pool | Done | |
-| JSON/error helpers, request IDs, middleware, health/readiness | Done | Strict JSON/error helpers, request IDs, CORS, request logging, rate limits, health/readiness, and panic recovery are implemented with unit tests; broader endpoint hardening is tracked in Phase 6. |
+| JSON/error helpers, request IDs, middleware, health/readiness | Done | Strict JSON/error helpers, request IDs, CORS, request logging, rate limits, health/readiness, and panic recovery are implemented with unit tests; database UUID values returned through catalogue maps are normalized to lowercase hyphenated strings; broader endpoint hardening is tracked in Phase 6. |
 | FakeClock and in-memory test helpers | Partial | Fake clock and selected stores/mailer helpers exist, not fakes for every service. |
 | Makefile targets | Partial | Build, test, migration, and seed targets exist; database-backed targets remain unverified. |
 | Dockerfile and API/PostgreSQL Compose stack | Partial | Files exist; end-to-end stack verification is blocked while Docker Desktop is paused. |

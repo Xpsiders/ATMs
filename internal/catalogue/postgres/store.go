@@ -242,10 +242,10 @@ func (s *Store) searchOfferings(ctx context.Context, tenant, user, student pgtyp
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, map[string]any{
-			"offering_id": row.OfferingID.String(), "course_id": row.CourseID.String(),
+			"offering_id": db.NormalizeUUIDValue(row.OfferingID), "course_id": db.NormalizeUUIDValue(row.CourseID),
 			"code": row.Code, "title": row.Title, "kind": row.Kind,
-			"department_id": row.DepartmentID.String(), "department_name": row.DepartmentName,
-			"semester_id": row.SemesterID.String(), "semester": row.Semester, "rank": row.Rank,
+			"department_id": db.NormalizeUUIDValue(row.DepartmentID), "department_name": row.DepartmentName,
+			"semester_id": db.NormalizeUUIDValue(row.SemesterID), "semester": row.Semester, "rank": row.Rank,
 		})
 	}
 	return items, nil
@@ -849,12 +849,8 @@ func scanRow(row rowScanner, columns []string) (map[string]any, error) {
 }
 
 func normalize(value any) any {
+	value = db.NormalizeUUIDValue(value)
 	switch value := value.(type) {
-	case pgtype.UUID:
-		if value.Valid {
-			return value.String()
-		}
-		return nil
 	case []byte:
 		return string(value)
 	default:

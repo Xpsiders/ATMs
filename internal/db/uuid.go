@@ -1,11 +1,33 @@
 package db
 
 import (
+	"encoding/hex"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+func NormalizeUUIDValue(value any) any {
+	var bytes [16]byte
+	switch value := value.(type) {
+	case [16]byte:
+		bytes = value
+	case pgtype.UUID:
+		if !value.Valid {
+			return nil
+		}
+		bytes = value.Bytes
+	default:
+		return value
+	}
+
+	var encoded [32]byte
+	hex.Encode(encoded[:], bytes[:])
+	return string(encoded[0:8]) + "-" + string(encoded[8:12]) + "-" +
+		string(encoded[12:16]) + "-" + string(encoded[16:20]) + "-" +
+		string(encoded[20:32])
+}
 
 func ParseUUID(value string) (pgtype.UUID, error) {
 	var id pgtype.UUID
