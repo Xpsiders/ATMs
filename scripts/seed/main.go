@@ -16,48 +16,83 @@ import (
 )
 
 const (
-	institutionID = "10000000-0000-4000-8000-000000000001"
-	facultyID     = "10000000-0000-4000-8000-000000000002"
-	departmentAID = "10000000-0000-4000-8000-000000000003"
-	departmentBID = "10000000-0000-4000-8000-000000000004"
-	programmeAID  = "10000000-0000-4000-8000-000000000005"
-	programmeBID  = "10000000-0000-4000-8000-000000000006"
-	academicID    = "10000000-0000-4000-8000-000000000007"
-	semesterID    = "10000000-0000-4000-8000-000000000008"
-	courseID      = "10000000-0000-4000-8000-000000000009"
-	offering100ID = "10000000-0000-4000-8000-000000000010"
-	offering200ID = "10000000-0000-4000-8000-000000000011"
-	venueAID      = "10000000-0000-4000-8000-000000000012"
-	venueBID      = "10000000-0000-4000-8000-000000000013"
-	deviceID      = "10000000-0000-4000-8000-000000000014"
-	student100AID = "10000000-0000-4000-8000-000000000015"
-	student200AID = "10000000-0000-4000-8000-000000000016"
-	student100BID = "10000000-0000-4000-8000-000000000017"
-	student200BID = "10000000-0000-4000-8000-000000000018"
-	adminID       = "10000000-0000-4000-8000-000000000019"
-	deptAdminAID  = "10000000-0000-4000-8000-000000000020"
-	deptAdminBID  = "10000000-0000-4000-8000-000000000021"
-	lecturerAID   = "10000000-0000-4000-8000-000000000022"
-	lecturerBID   = "10000000-0000-4000-8000-000000000023"
-	studentUserID = "10000000-0000-4000-8000-000000000024"
+	institutionID   = "10000000-0000-4000-8000-000000000001"
+	facultyID       = "10000000-0000-4000-8000-000000000002"
+	departmentAID   = "10000000-0000-4000-8000-000000000003"
+	departmentBID   = "10000000-0000-4000-8000-000000000004"
+	programmeAID    = "10000000-0000-4000-8000-000000000005"
+	programmeBID    = "10000000-0000-4000-8000-000000000006"
+	academicID      = "10000000-0000-4000-8000-000000000007"
+	semesterID      = "10000000-0000-4000-8000-000000000008"
+	courseID        = "10000000-0000-4000-8000-000000000009"
+	offering100ID   = "10000000-0000-4000-8000-000000000010"
+	offering200ID   = "10000000-0000-4000-8000-000000000011"
+	venueAID        = "10000000-0000-4000-8000-000000000012"
+	venueBID        = "10000000-0000-4000-8000-000000000013"
+	deviceID        = "10000000-0000-4000-8000-000000000014"
+	student100AID   = "10000000-0000-4000-8000-000000000015"
+	student200AID   = "10000000-0000-4000-8000-000000000016"
+	student100BID   = "10000000-0000-4000-8000-000000000017"
+	student200BID   = "10000000-0000-4000-8000-000000000018"
+	adminID         = "10000000-0000-4000-8000-000000000019"
+	deptAdminAID    = "10000000-0000-4000-8000-000000000020"
+	deptAdminBID    = "10000000-0000-4000-8000-000000000021"
+	lecturerAID     = "10000000-0000-4000-8000-000000000022"
+	lecturerBID     = "10000000-0000-4000-8000-000000000023"
+	studentUserID   = "10000000-0000-4000-8000-000000000024"
+	facultyAdminID  = "10000000-0000-4000-8000-000000000025"
+	platformAdminID = "10000000-0000-4000-8000-000000000026"
+	timetable100ID  = "10000000-0000-4000-8000-000000000027"
+	timetable200ID  = "10000000-0000-4000-8000-000000000028"
 )
 
+type teachingAssignment struct {
+	lecturerID  string
+	offeringID  string
+	venueID     string
+	timetableID string
+	weekday     int
+	startsAt    string
+	endsAt      string
+}
+
+var demoTeachingAssignments = []teachingAssignment{
+	{lecturerID: lecturerAID, offeringID: offering100ID, venueID: venueAID, timetableID: timetable100ID, weekday: 1, startsAt: "09:00", endsAt: "10:00"},
+	{lecturerID: lecturerBID, offeringID: offering200ID, venueID: venueBID, timetableID: timetable200ID, weekday: 2, startsAt: "10:00", endsAt: "11:00"},
+}
+
+type demoRegistration struct {
+	offeringID string
+	studentID  string
+}
+
+var demoApprovedRegistrations = []demoRegistration{
+	{offeringID: offering100ID, studentID: student100AID},
+	{offeringID: offering100ID, studentID: student100BID},
+	{offeringID: offering200ID, studentID: student200AID},
+	{offeringID: offering200ID, studentID: student200BID},
+}
+
 type demoCredential struct {
-	label    string
-	userID   string
-	email    string
-	password string
-	role     string
-	deptID   string
+	label     string
+	userID    string
+	email     string
+	password  string
+	role      string
+	scopeType string
+	facultyID string
+	deptID    string
 }
 
 var demoCredentials = []demoCredential{
-	{"Institution administrator", adminID, "admin@attendance.test", "DemoAdmin-2026!", "institution_admin", ""},
-	{"Department A administrator", deptAdminAID, "dept-a@attendance.test", "DemoDeptA-2026!", "department_admin", departmentAID},
-	{"Department B administrator", deptAdminBID, "dept-b@attendance.test", "DemoDeptB-2026!", "department_admin", departmentBID},
-	{"Lecturer A", lecturerAID, "lecturer-a@attendance.test", "DemoLecturerA-2026!", "lecturer", departmentAID},
-	{"Lecturer B", lecturerBID, "lecturer-b@attendance.test", "DemoLecturerB-2026!", "lecturer", departmentBID},
-	{"Student (claimed record)", studentUserID, "student-100a@attendance.test", "DemoStudent-2026!", "student", departmentAID},
+	{"Institution administrator", adminID, "admin@attendance.test", "DemoAdmin-2026!", "institution_admin", "institution", "", ""},
+	{"Faculty administrator", facultyAdminID, "faculty-admin@attendance.test", "DemoFaculty-2026!", "faculty_admin", "faculty", facultyID, ""},
+	{"Department A administrator", deptAdminAID, "dept-a@attendance.test", "DemoDeptA-2026!", "department_admin", "department", "", departmentAID},
+	{"Department B administrator", deptAdminBID, "dept-b@attendance.test", "DemoDeptB-2026!", "department_admin", "department", "", departmentBID},
+	{"Lecturer A", lecturerAID, "lecturer-a@attendance.test", "DemoLecturerA-2026!", "lecturer", "department", "", departmentAID},
+	{"Lecturer B", lecturerBID, "lecturer-b@attendance.test", "DemoLecturerB-2026!", "lecturer", "department", "", departmentBID},
+	{"Student (claimed record)", studentUserID, "student-100a@attendance.test", "DemoStudent-2026!", "student", "department", "", departmentAID},
+	{"Platform administrator", platformAdminID, "platform-admin@attendance.test", "DemoPlatform-2026!", "platform_admin", "platform", "", ""},
 }
 
 type seedPlan struct {
@@ -232,16 +267,29 @@ func seedDemoData(ctx context.Context, tx pgx.Tx, hashes map[string][]byte, devi
 			return false, fmt.Errorf("seed %s: %w", item.name, err)
 		}
 	}
+	for _, assignment := range demoTeachingAssignments {
+		if _, err := tx.Exec(ctx, `INSERT INTO timetable(
+			id,institution_id,offering_id,venue_id,weekday,starts_at,ends_at)
+			VALUES($1,$2,$3,$4,$5,$6::time,$7::time)
+			ON CONFLICT(institution_id,id) DO UPDATE SET offering_id=EXCLUDED.offering_id,
+			venue_id=EXCLUDED.venue_id,weekday=EXCLUDED.weekday,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at`,
+			assignment.timetableID, institutionID, assignment.offeringID, assignment.venueID,
+			assignment.weekday, assignment.startsAt, assignment.endsAt); err != nil {
+			return false, fmt.Errorf("seed timetable %s: %w", assignment.timetableID, err)
+		}
+	}
 	for _, role := range demoCredentials {
-		scopeType := "institution"
-		var department any
+		var faculty, department any
+		if role.facultyID != "" {
+			faculty = role.facultyID
+		}
 		if role.deptID != "" {
-			scopeType = "department"
 			department = role.deptID
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO role_assignments(institution_id,user_id,role,scope_type,department_id)
-			VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-			institutionID, role.userID, role.role, scopeType, department); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO role_assignments(
+			institution_id,user_id,role,scope_type,faculty_id,department_id)
+			VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+			institutionID, role.userID, role.role, role.scopeType, faculty, department); err != nil {
 			return false, fmt.Errorf("seed role for %s: %w", role.label, err)
 		}
 	}
@@ -266,23 +314,27 @@ func seedDemoData(ctx context.Context, tx pgx.Tx, hashes map[string][]byte, devi
 		institutionID, departmentAID, lecturerAID, departmentBID, lecturerBID); err != nil {
 		return false, fmt.Errorf("seed lecturer records: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO offering_lecturers(institution_id,offering_id,lecturer_user_id)
-		VALUES($1,$2,$4),($1,$3,$5) ON CONFLICT DO NOTHING`,
-		institutionID, offering100ID, offering200ID, lecturerAID, lecturerBID); err != nil {
-		return false, fmt.Errorf("seed offering lecturers: %w", err)
+	for _, assignment := range demoTeachingAssignments {
+		if _, err := tx.Exec(ctx, `INSERT INTO offering_lecturers(institution_id,offering_id,lecturer_user_id)
+			VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
+			institutionID, assignment.offeringID, assignment.lecturerID); err != nil {
+			return false, fmt.Errorf("seed offering lecturer %s: %w", assignment.lecturerID, err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO offering_auto_targets(institution_id,offering_id,department_id,level)
 		VALUES($1,$2,$4,100),($1,$2,$5,100),($1,$3,$4,200),($1,$3,$5,200)
 		ON CONFLICT DO NOTHING`, institutionID, offering100ID, offering200ID, departmentAID, departmentBID); err != nil {
 		return false, fmt.Errorf("seed offering auto-registration targets: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO course_registrations(institution_id,offering_id,student_record_id,status,approved_at)
-		VALUES($1,$2,$4,'approved',now()),($1,$2,$5,'approved',now()),
-		      ($1,$3,$6,'approved',now()),($1,$3,$7,'approved',now())
-		ON CONFLICT(institution_id,offering_id,student_record_id) DO UPDATE SET
-		status='approved',approved_at=coalesce(course_registrations.approved_at,now())`,
-		institutionID, offering100ID, offering200ID, student100AID, student100BID, student200AID, student200BID); err != nil {
-		return false, fmt.Errorf("seed course registrations: %w", err)
+	for _, registration := range demoApprovedRegistrations {
+		if _, err := tx.Exec(ctx, `INSERT INTO course_registrations(
+			institution_id,offering_id,student_record_id,status,approved_at)
+			VALUES($1,$2,$3,'approved',now())
+			ON CONFLICT(institution_id,offering_id,student_record_id) DO UPDATE SET
+			status='approved',approved_at=coalesce(course_registrations.approved_at,now())`,
+			institutionID, registration.offeringID, registration.studentID); err != nil {
+			return false, fmt.Errorf("seed approved registration for %s: %w", registration.studentID, err)
+		}
 	}
 
 	var createdID string
@@ -313,6 +365,8 @@ func printCredentials() {
 	fmt.Println("\nInstitution ID:", institutionID)
 	fmt.Printf("Departments: ECE=%s ME=%s\n", departmentAID, departmentBID)
 	fmt.Printf("Offerings: level 100=%s level 200=%s\n", offering100ID, offering200ID)
+	fmt.Printf("Timetables: level 100=%s at venue %s; level 200=%s at venue %s\n",
+		timetable100ID, venueAID, timetable200ID, venueBID)
 	fmt.Printf("Claimed demo student record: MAT100A=%s\n", student100AID)
 	fmt.Printf("Unclaimed records: MAT200A=%s student-200a@attendance.test; MAT100B=%s student-100b@attendance.test; MAT200B=%s student-200b@attendance.test\n",
 		student200AID, student100BID, student200BID)

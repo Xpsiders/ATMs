@@ -161,6 +161,44 @@ func (s *Store) List(ctx context.Context, institutionID, userID, studentID strin
 	return collectRows(rows)
 }
 
+func (s *Store) ListVenues(ctx context.Context, institutionIDText, userIDText string, limit, offset int) ([]map[string]any, int64, error) {
+	institutionID, err := db.ParseUUID(institutionIDText)
+	if err != nil {
+		return nil, 0, err
+	}
+	userID, err := db.ParseUUID(userIDText)
+	if err != nil {
+		return nil, 0, err
+	}
+	allowed, err := s.queries.CanListVenues(ctx, dbgen.CanListVenuesParams{
+		InstitutionID: institutionID, UserID: userID,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("authorize venue listing: %w", err)
+	}
+	if !allowed {
+		return nil, 0, catalogue.ErrForbidden
+	}
+	total, err := s.queries.CountVenues(ctx, institutionID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count institution venues: %w", err)
+	}
+	rows, err := s.queries.ListVenues(ctx, dbgen.ListVenuesParams{
+		InstitutionID: institutionID, Limit: int32(limit), Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list institution venues: %w", err)
+	}
+	items := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, map[string]any{
+			"id": row.ID.String(), "name": row.Name, "latitude": row.Latitude,
+			"longitude": row.Longitude, "radius_meters": row.RadiusMeters,
+		})
+	}
+	return items, total, nil
+}
+
 func (s *Store) searchOfferings(ctx context.Context, tenant, user, student pgtype.UUID, filters map[string]string, limit, offset int) ([]map[string]any, error) {
 	department := pgtype.UUID{}
 	if filters["department_id"] != "" {

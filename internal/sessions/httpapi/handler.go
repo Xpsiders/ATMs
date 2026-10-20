@@ -34,11 +34,32 @@ func NewHandler(service *sessions.Service, access AccessStore) (*Handler, error)
 }
 
 func (h *Handler) RegisterRoutes(router chi.Router) {
+	router.Get("/me/live-classes", h.liveClasses)
 	router.Post("/sessions", h.start)
 	router.Patch("/sessions/{id}", h.fixCode)
 	router.Post("/sessions/{id}/scanner-status", h.scannerStatus)
 	router.Post("/sessions/{id}/end", h.end)
 	router.Get("/sessions/{id}/code", h.code)
+}
+
+func (h *Handler) liveClasses(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "authentication_required", "A bearer token is required", nil)
+		return
+	}
+	if principal.Identity.StudentID == "" {
+		httpx.WriteError(w, http.StatusForbidden, "student_account_required", "Only a student account can view live classes", nil)
+		return
+	}
+	items, err := h.service.LiveClasses(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, principal.Identity.StudentID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "load current user's live classes failed", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to load live classes", nil)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) scannerStatus(w http.ResponseWriter, r *http.Request) {

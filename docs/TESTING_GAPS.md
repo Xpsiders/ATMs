@@ -23,6 +23,11 @@ manual guide and a real PostgreSQL 15+ instance to validate at least:
   entry commit or roll back together, including a competing acceptance.
 - Student verification-code consumption, account creation, record claiming,
   and student-role assignment commit or roll back together.
+- Signup start responses are identical for matching, mismatched,
+  already-claimed, and unknown records, while only matching eligible records
+  receive a code; verification failures do not reveal claim state. Exercise
+  rate limits and any persistent verification-attempt caps after they are
+  implemented.
 - Device task queries resolve only the authenticated device's venue and
   pending enrolments, and enrolment completion cannot update another device's
   task.
@@ -39,6 +44,15 @@ manual guide and a real PostgreSQL 15+ instance to validate at least:
   reads return 404, collection pagination excludes out-of-scope rows, source
   and destination checks prevent moving resources outside scope, and general
   course reads never expose another department's students.
+- Verify `/me/offerings` returns only offerings visible to the authenticated
+  caller, including a lecturer's assigned and coordinated offerings; requests
+  from different department scopes must not reveal another department's
+  offerings.
+- Verify `/venues` rejects student users, allows lecturers and administrator
+  roles, and applies the authenticated institution to both page and total
+  queries. Verify `/me/live-classes` returns only open sessions for the
+  authenticated student's approved registrations, reflects both web and
+  fingerprint check-ins, and never returns attendance codes.
 - Registration modes and review status transitions persist correctly; repeated
   submissions and attempts to review an already-reviewed registration cannot
   change its outcome.

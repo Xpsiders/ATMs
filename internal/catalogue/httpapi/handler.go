@@ -33,6 +33,8 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	} {
 		h.registerResource(router, string(resource), resource)
 	}
+	router.Get("/me/offerings", h.myOfferings)
+	router.Get("/venues", h.venues)
 	router.Get("/institutions", h.list(catalogue.Institutions))
 	router.Get("/institutions/{id}", h.get(catalogue.Institutions))
 	router.Patch("/institutions/{id}", h.update(catalogue.Institutions))
@@ -41,6 +43,51 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.Put("/offerings/{id}/lecturers", h.setOfferingLecturers)
 	router.Get("/offerings/{id}/auto-targets", h.offeringAutoTargets)
 	router.Put("/offerings/{id}/auto-targets", h.setOfferingAutoTargets)
+}
+
+func (h *Handler) myOfferings(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	filters := map[string]string{}
+	limit, offset, ok := addPagination(w, r, filters)
+	if !ok {
+		return
+	}
+	filters["limit"] = strconv.Itoa(limit + 1)
+	filters["offset"] = strconv.Itoa(offset)
+	items, err := h.service.List(r.Context(), principal.Identity.InstitutionID, principal.Identity.UserID,
+		principal.Identity.StudentID, catalogue.Offerings, filters)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to list current user's offerings")
+		return
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"items": items, "limit": limit, "offset": offset, "has_more": hasMore,
+	})
+}
+
+func (h *Handler) venues(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, ok := addPagination(w, r, map[string]string{})
+	if !ok {
+		return
+	}
+	page, err := h.service.ListVenues(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, limit, offset)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to list institution venues")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, page)
 }
 
 func (h *Handler) registerResource(router chi.Router, path string, resource catalogue.Resource) {

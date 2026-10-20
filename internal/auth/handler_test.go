@@ -291,4 +291,63 @@ func TestStudentClaimHandlerUnknownMatricRequestsApproval(t *testing.T) {
 	}
 }
 
+func TestStudentClaimStartDoesNotRevealRecordEligibility(t *testing.T) {
+	t.Parallel()
+	const institutionID = "2f4e4ed0-490c-4cba-9343-62b0744d6ba7"
+	clock := testutil.NewFakeClock(time.Unix(1_700_000_000, 0))
+	tokens, _ := newTestTokens(t, clock)
+	repository := newClaimRepository()
+	repository.record.InstitutionID = institutionID
+	service, err := auth.NewClaimService(repository, &testutil.MemoryMailer{}, clock,
+		[]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := auth.NewClaimHandler(service, tokens, false, http.SameSiteLaxMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	handler.RegisterRoutes(router)
+	start := func(matricNo, email string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/auth/signup-claim", strings.NewReader(
+			`{"institution_id":"`+institutionID+`","matric_no":"`+matricNo+`","email":"`+email+`"}`,
+		))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+
+	matching := start("MAT001", "record@example.test")
+	mismatch := start("MAT001", "wrong@example.test")
+	repository.record.Claimed = true
+	claimed := start("MAT001", "record@example.test")
+	unknown := start("UNKNOWN", "unknown@example.test")
+
+	for label, response := range map[string]*httptest.ResponseRecorder{
+		"matching": matching, "email mismatch": mismatch, "already claimed": claimed, "unknown": unknown,
+	} {
+		if response.Code != http.StatusAccepted || response.Body.String() != matching.Body.String() {
+			t.Errorf("%s response = %d %s; expected same acknowledgement as matching record",
+				label, response.Code, response.Body.String())
+		}
+	}
+
+	verify := func(matricNo, code string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/auth/verify-email", strings.NewReader(
+			`{"institution_id":"`+institutionID+`","matric_no":"`+matricNo+`","code":"`+code+`","password":"correct horse battery staple"}`,
+		))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		return response
+	}
+	invalidCode := verify("MAT001", "000000")
+	claimedRecord := verify("MAT001", "000000")
+	if invalidCode.Code != http.StatusBadRequest || claimedRecord.Code != invalidCode.Code ||
+		claimedRecord.Body.String() != invalidCode.Body.String() {
+		t.Errorf("verification response reveals claimed state: invalid=%d %s claimed=%d %s",
+			invalidCode.Code, invalidCode.Body.String(), claimedRecord.Code, claimedRecord.Body.String())
+	}
+}
+
 var _ auth.LoginRepository = fakeLoginRepository{}

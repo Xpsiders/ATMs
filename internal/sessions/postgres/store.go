@@ -327,6 +327,38 @@ func (s *PostgresStore) CanManageSession(ctx context.Context, institutionIDText,
 	return allowed, nil
 }
 
+func (s *PostgresStore) ListLiveClasses(ctx context.Context, institutionIDText, userIDText, studentIDText string) ([]sessions.LiveClass, error) {
+	institutionID, err := db.ParseUUID(institutionIDText)
+	if err != nil {
+		return nil, err
+	}
+	userID, err := db.ParseUUID(userIDText)
+	if err != nil {
+		return nil, err
+	}
+	studentID, err := db.ParseUUID(studentIDText)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.queries.ListStudentLiveClasses(ctx, dbgen.ListStudentLiveClassesParams{
+		InstitutionID: institutionID, ClaimedByUserID: userID, ID: studentID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query live classes: %w", err)
+	}
+	items := make([]sessions.LiveClass, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, sessions.LiveClass{
+			SessionID: row.SessionID.String(), OfferingID: row.OfferingID.String(),
+			CourseCode: row.CourseCode, CourseTitle: row.CourseTitle,
+			VenueID: row.VenueID.String(), VenueName: row.VenueName, LecturerName: row.LecturerName,
+			StartedAt: row.StartedAt.Time.UTC(), LateAfterMin: int(row.LateAfterMin),
+			RotatingCode: row.RotatingCode, AlreadyCheckedIn: row.AlreadyCheckedIn.Bool,
+		})
+	}
+	return items, nil
+}
+
 func sessionFromGetRow(row dbgen.GetLectureSessionRow) sessions.Session {
 	return sessions.Session{
 		ID: row.ID.String(), InstitutionID: row.InstitutionID.String(), OfferingID: row.OfferingID.String(),

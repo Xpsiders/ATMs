@@ -148,6 +148,136 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
+  /me/live-classes:
+    get:
+      operationId: getMyLiveClasses
+      summary: List open sessions for the authenticated student's approved registrations
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Sessions open for offerings where the authenticated student has an approved registration. Never includes attendance codes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [session_id, offering_id, course_code, course_title, venue_id, venue_name, lecturer_name, started_at, late_after_min, rotating_code, already_checked_in]
+                      properties:
+                        session_id: {type: string, format: uuid}
+                        offering_id: {type: string, format: uuid}
+                        course_code: {type: string}
+                        course_title: {type: string}
+                        venue_id: {type: string, format: uuid}
+                        venue_name: {type: string}
+                        lecturer_name: {type: string}
+                        started_at: {type: string, format: date-time}
+                        late_after_min: {type: integer}
+                        rotating_code: {type: boolean}
+                        already_checked_in: {type: boolean}
+              example:
+                items:
+                  - session_id: 10000000-0000-4000-8000-000000000027
+                    offering_id: 10000000-0000-4000-8000-000000000010
+                    course_code: ECE301
+                    course_title: Circuits and Systems
+                    venue_id: 10000000-0000-4000-8000-000000000012
+                    venue_name: Engineering Hall
+                    lecturer_name: Lecturer A
+                    started_at: "2026-10-20T10:00:00Z"
+                    late_after_min: 10
+                    rotating_code: true
+                    already_checked_in: false
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Authenticated user is not a claimed student.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /me/offerings:
+    get:
+      operationId: getMyOfferings
+      summary: List catalogue offerings visible to the authenticated user, including lecturer assignments
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated offering list filtered by the authenticated user's resource visibility.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedCatalogueItems"
+        "400":
+          description: Invalid limit or offset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /venues:
+    get:
+      operationId: listVenues
+      summary: List venues in the authenticated user's institution
+      description: Accessible only to lecturers and platform, institution, faculty, or department administrators. Venue results never cross the authenticated institution.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Paginated institution venues with the total number of matching venues.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, latitude, longitude, radius_meters]
+                      properties:
+                        id: {type: string, format: uuid}
+                        name: {type: string}
+                        latitude: {type: number}
+                        longitude: {type: number}
+                        radius_meters: {type: integer}
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  total: {type: integer}
+        "400":
+          description: Invalid limit or offset.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Caller is not a lecturer or administrator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /auth/refresh:
     post:
       operationId: refreshAccessToken
@@ -253,7 +383,7 @@ paths:
               email: student@example.test
       responses:
         "202":
-          description: Verification email sent to the record's stored address, or approval request created for an unknown matric number.
+          description: Enumeration-safe acknowledgement. A verification email is sent only when the matric number and submitted email match an unclaimed record; otherwise an unknown-matric approval request is created or no action is taken.
           content:
             application/json:
               schema:
@@ -266,13 +396,7 @@ paths:
                   message:
                     type: string
         "400":
-          description: Invalid request or submitted email does not match the record.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "409":
-          description: Student record was already claimed.
+          description: Request body or fields are invalid.
           content:
             application/json:
               schema:
@@ -321,13 +445,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TokenResponse"
         "400":
-          description: Invalid request, password, or verification code.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorEnvelope"
-        "409":
-          description: Student record was already claimed.
+          description: Invalid request, password, or verification code. Invalid, expired, used, and already-claimed records use the same verification error.
           content:
             application/json:
               schema:

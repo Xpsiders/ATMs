@@ -16,6 +16,7 @@ type memorySessionStore struct {
 	nextID             string
 	audits             int
 	scannerUnavailable bool
+	liveClasses        []sessions.LiveClass
 }
 
 func newMemorySessionStore() *memorySessionStore {
@@ -56,6 +57,10 @@ func (s *memorySessionStore) End(_ context.Context, institutionID, sessionID str
 	s.sessions[sessionID] = session
 	delete(s.open, session.VenueID)
 	return session, nil
+}
+
+func (s *memorySessionStore) ListLiveClasses(context.Context, string, string, string) ([]sessions.LiveClass, error) {
+	return s.liveClasses, nil
 }
 
 func (s *memorySessionStore) ConvertToFixedCode(_ context.Context, institutionID, sessionID, _ string, code string, _ time.Time) (sessions.Session, error) {
@@ -120,6 +125,29 @@ func TestSessionStartCodeAndVenueConflict(t *testing.T) {
 	var venueErr *sessions.OpenVenueError
 	if !errors.As(err, &venueErr) || venueErr.SessionID != started.Session.ID {
 		t.Fatalf("venue conflict = %v", err)
+	}
+}
+
+func TestLiveClassesUsesStoreAndReturnsEmptyArray(t *testing.T) {
+	t.Parallel()
+	store := newMemorySessionStore()
+	service := newSessionService(t, store, testutil.NewFakeClock(time.Unix(120, 0)))
+	items, err := service.LiveClasses(context.Background(), "institution-1", "student-user", "student-record")
+	if err != nil || items == nil || len(items) != 0 {
+		t.Fatalf("empty live classes = %#v, %v; want non-nil empty slice", items, err)
+	}
+	store.liveClasses = []sessions.LiveClass{{
+		SessionID: "session-1", OfferingID: "offering-1", CourseCode: "ECE301",
+		CourseTitle: "Circuits and Systems", VenueID: "venue-1",
+		VenueName: "Engineering Hall", LecturerName: "Lecturer A",
+		StartedAt: time.Unix(120, 0).UTC(), LateAfterMin: 10,
+		RotatingCode: true, AlreadyCheckedIn: false,
+	}}
+	items, err = service.LiveClasses(context.Background(), "institution-1", "student-user", "student-record")
+	if err != nil || len(items) != 1 || items[0].CourseCode != "ECE301" ||
+		items[0].VenueName != "Engineering Hall" || items[0].LecturerName != "Lecturer A" ||
+		items[0].LateAfterMin != 10 || !items[0].RotatingCode || items[0].AlreadyCheckedIn {
+		t.Fatalf("live classes = %#v, %v", items, err)
 	}
 }
 

@@ -7,8 +7,9 @@ Standalone Go REST API repository for the Campus Attendance Platform.
 The repository contains the Phase 0 foundation and tested slices for
 authentication/student claims, check-in, sessions, device scans,
 organization/catalogue, registration, student CSV preview/commit, scoped staff
-invitations, session reports, roster sheets, and attendance overrides. A
-development seed loader is available. The backend is still incomplete:
+invitations, session reports, roster sheets, attendance overrides, student live
+classes, lecturer-visible offerings, and paginated venue listing. A development
+seed loader is available. The backend is still incomplete:
 database-backed verification, staff CSV import, signup-request review,
 device-key management, aggregate reports, disputes, email outbox processing,
 and several hardening requirements remain. Do not deploy this as a
@@ -35,6 +36,10 @@ The compose file provides an API and PostgreSQL service. Apply migrations with
 load the demo data and print credentials and the initial scanner key. The
 plaintext device key is shown only when the seed command creates the device;
 rerunning seed does not recover or rotate an existing key.
+The demo dataset includes development-only accounts for platform admin,
+institution admin, faculty admin, department admins for both departments,
+lecturers, and a claimed student. The seed output lists each account's email
+and password; use the institution UUID printed there for login.
 
 ## Commands
 
@@ -51,9 +56,9 @@ and `$env:ALLOWED_ORIGIN = "..."` before running Go commands.
 
 `api/openapi.yaml` is intended to be the source contract for
 `attendance-web`. It describes implemented health, authentication and staff
-invitation, catalogue, registration, student import, check-in, session, report,
-roster, override, and device operations; remaining endpoint groups are still
-under development.
+invitation, catalogue, registration, student import, check-in, session, live
+class, venue, report, roster, override, and device operations; remaining
+endpoint groups are still under development.
 
 See `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, and
 `docs/TESTING_GAPS.md`. Track delivery status in `docs/PROGRESS.md`.

@@ -506,6 +506,64 @@ SELECT EXISTS (
       )
 );
 
+-- name: ListStudentLiveClasses :many
+SELECT ls.id AS session_id, ls.offering_id, c.code AS course_code,
+       c.title AS course_title, ls.venue_id, v.name AS venue_name,
+       lecturer.display_name AS lecturer_name,
+       ls.started_at, ls.late_after_min, ls.rotating_code,
+       EXISTS (
+         SELECT 1 FROM web_checkins AS wc
+         WHERE wc.institution_id = ls.institution_id
+           AND wc.session_id = ls.id
+           AND wc.student_record_id = student.id
+       ) OR EXISTS (
+         SELECT 1 FROM fingerprint_scans AS fs
+         WHERE fs.institution_id = ls.institution_id
+           AND fs.session_id = ls.id
+           AND fs.student_record_id = student.id
+       ) AS already_checked_in
+FROM lecture_sessions AS ls
+JOIN course_offerings AS o
+  ON o.institution_id = ls.institution_id AND o.id = ls.offering_id
+JOIN courses AS c
+  ON c.institution_id = o.institution_id AND c.id = o.course_id
+JOIN venues AS v
+  ON v.institution_id = ls.institution_id AND v.id = ls.venue_id
+JOIN student_records AS student
+  ON student.institution_id = ls.institution_id
+ AND student.id = $3
+ AND student.claimed_by_user_id = $2
+JOIN course_registrations AS registration
+  ON registration.institution_id = student.institution_id
+ AND registration.student_record_id = student.id
+ AND registration.offering_id = o.id
+ AND registration.status = 'approved'
+JOIN users AS lecturer
+  ON lecturer.institution_id = ls.institution_id
+ AND lecturer.id = ls.started_by_user_id
+WHERE ls.institution_id = $1
+  AND ls.ended_at IS NULL
+ORDER BY ls.started_at DESC, ls.id;
+
+-- name: CanListVenues :one
+SELECT EXISTS (
+    SELECT 1 FROM role_assignments
+    WHERE institution_id = $1 AND user_id = $2
+      AND role IN ('platform_admin', 'institution_admin', 'faculty_admin', 'department_admin', 'lecturer')
+);
+
+-- name: ListVenues :many
+SELECT id, name, latitude, longitude, radius_meters
+FROM venues
+WHERE institution_id = $1
+ORDER BY name, id
+LIMIT $2 OFFSET $3;
+
+-- name: CountVenues :one
+SELECT count(*)
+FROM venues
+WHERE institution_id = $1;
+
 -- name: SearchOfferingsFullText :many
 SELECT
     o.id AS offering_id,

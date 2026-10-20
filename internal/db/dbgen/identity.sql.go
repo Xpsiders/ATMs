@@ -90,6 +90,26 @@ func (q *Queries) CanInviteTarget(ctx context.Context, arg CanInviteTargetParams
 	return items, nil
 }
 
+const canListVenues = `-- name: CanListVenues :one
+SELECT EXISTS (
+    SELECT 1 FROM role_assignments
+    WHERE institution_id = $1 AND user_id = $2
+      AND role IN ('platform_admin', 'institution_admin', 'faculty_admin', 'department_admin', 'lecturer')
+)
+`
+
+type CanListVenuesParams struct {
+	InstitutionID pgtype.UUID `json:"institution_id"`
+	UserID        pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) CanListVenues(ctx context.Context, arg CanListVenuesParams) (bool, error) {
+	row := q.db.QueryRow(ctx, canListVenues, arg.InstitutionID, arg.UserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const canManageOffering = `-- name: CanManageOffering :one
 SELECT EXISTS (
     SELECT 1
@@ -300,6 +320,19 @@ func (q *Queries) ConvertRotatingSessionToFixed(ctx context.Context, arg Convert
 		&i.LateAfterMin,
 	)
 	return i, err
+}
+
+const countVenues = `-- name: CountVenues :one
+SELECT count(*)
+FROM venues
+WHERE institution_id = $1
+`
+
+func (q *Queries) CountVenues(ctx context.Context, institutionID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countVenues, institutionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createClaimedStudentUser = `-- name: CreateClaimedStudentUser :one
@@ -1498,6 +1531,146 @@ func (q *Queries) ListSessionHeartbeats(ctx context.Context, arg ListSessionHear
 	for rows.Next() {
 		var i ListSessionHeartbeatsRow
 		if err := rows.Scan(&i.DeviceID, &i.HeartbeatAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStudentLiveClasses = `-- name: ListStudentLiveClasses :many
+SELECT ls.id AS session_id, ls.offering_id, c.code AS course_code,
+       c.title AS course_title, ls.venue_id, v.name AS venue_name,
+       lecturer.display_name AS lecturer_name,
+       ls.started_at, ls.late_after_min, ls.rotating_code,
+       EXISTS (
+         SELECT 1 FROM web_checkins AS wc
+         WHERE wc.institution_id = ls.institution_id
+           AND wc.session_id = ls.id
+           AND wc.student_record_id = student.id
+       ) OR EXISTS (
+         SELECT 1 FROM fingerprint_scans AS fs
+         WHERE fs.institution_id = ls.institution_id
+           AND fs.session_id = ls.id
+           AND fs.student_record_id = student.id
+       ) AS already_checked_in
+FROM lecture_sessions AS ls
+JOIN course_offerings AS o
+  ON o.institution_id = ls.institution_id AND o.id = ls.offering_id
+JOIN courses AS c
+  ON c.institution_id = o.institution_id AND c.id = o.course_id
+JOIN venues AS v
+  ON v.institution_id = ls.institution_id AND v.id = ls.venue_id
+JOIN student_records AS student
+  ON student.institution_id = ls.institution_id
+ AND student.id = $3
+ AND student.claimed_by_user_id = $2
+JOIN course_registrations AS registration
+  ON registration.institution_id = student.institution_id
+ AND registration.student_record_id = student.id
+ AND registration.offering_id = o.id
+ AND registration.status = 'approved'
+JOIN users AS lecturer
+  ON lecturer.institution_id = ls.institution_id
+ AND lecturer.id = ls.started_by_user_id
+WHERE ls.institution_id = $1
+  AND ls.ended_at IS NULL
+ORDER BY ls.started_at DESC, ls.id
+`
+
+type ListStudentLiveClassesParams struct {
+	InstitutionID   pgtype.UUID `json:"institution_id"`
+	ClaimedByUserID pgtype.UUID `json:"claimed_by_user_id"`
+	ID              pgtype.UUID `json:"id"`
+}
+
+type ListStudentLiveClassesRow struct {
+	SessionID        pgtype.UUID        `json:"session_id"`
+	OfferingID       pgtype.UUID        `json:"offering_id"`
+	CourseCode       string             `json:"course_code"`
+	CourseTitle      string             `json:"course_title"`
+	VenueID          pgtype.UUID        `json:"venue_id"`
+	VenueName        string             `json:"venue_name"`
+	LecturerName     string             `json:"lecturer_name"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	LateAfterMin     int32              `json:"late_after_min"`
+	RotatingCode     bool               `json:"rotating_code"`
+	AlreadyCheckedIn pgtype.Bool        `json:"already_checked_in"`
+}
+
+func (q *Queries) ListStudentLiveClasses(ctx context.Context, arg ListStudentLiveClassesParams) ([]ListStudentLiveClassesRow, error) {
+	rows, err := q.db.Query(ctx, listStudentLiveClasses, arg.InstitutionID, arg.ClaimedByUserID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStudentLiveClassesRow
+	for rows.Next() {
+		var i ListStudentLiveClassesRow
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.OfferingID,
+			&i.CourseCode,
+			&i.CourseTitle,
+			&i.VenueID,
+			&i.VenueName,
+			&i.LecturerName,
+			&i.StartedAt,
+			&i.LateAfterMin,
+			&i.RotatingCode,
+			&i.AlreadyCheckedIn,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVenues = `-- name: ListVenues :many
+SELECT id, name, latitude, longitude, radius_meters
+FROM venues
+WHERE institution_id = $1
+ORDER BY name, id
+LIMIT $2 OFFSET $3
+`
+
+type ListVenuesParams struct {
+	InstitutionID pgtype.UUID `json:"institution_id"`
+	Limit         int32       `json:"limit"`
+	Offset        int32       `json:"offset"`
+}
+
+type ListVenuesRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Name         string      `json:"name"`
+	Latitude     float64     `json:"latitude"`
+	Longitude    float64     `json:"longitude"`
+	RadiusMeters int32       `json:"radius_meters"`
+}
+
+func (q *Queries) ListVenues(ctx context.Context, arg ListVenuesParams) ([]ListVenuesRow, error) {
+	rows, err := q.db.Query(ctx, listVenues, arg.InstitutionID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVenuesRow
+	for rows.Next() {
+		var i ListVenuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Latitude,
+			&i.Longitude,
+			&i.RadiusMeters,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -61,7 +61,10 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    ```
 
    For example, institution admin is `admin@attendance.test` /
-   `DemoAdmin-2026!`; other seeded roles are printed by the seed command.
+   `DemoAdmin-2026!`. The seed command prints credentials for platform admin,
+   institution admin, faculty admin, each department admin, lecturers, and a
+   claimed student. Use each account to verify its role-scoped frontend views.
+   All demo accounts use the printed institution ID when logging in.
    Expect a JSON `access_token`, `expires_in: 900`, `force_password_change`,
    `must_change_password`, `id`, `name`, `email`, `status`, and a `roles` array.
    Each role includes `role`, `scope_type`, and `scope_id`; student roles also
@@ -82,10 +85,36 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    Logout with `curl.exe -i -X POST http://localhost:8080/auth/logout -b
    "attendance_refresh=REFRESH_COOKIE"`.
 
+   **Student live classes.** With the claimed demo student's token, query only
+   currently open sessions for approved registrations. The response includes
+   session/course/venue/lecturer metadata and check-in state, but never an
+   attendance code:
+
+   ```cmd
+   curl.exe -i http://localhost:8080/me/live-classes -H "Authorization: ******"
+   ```
+
+   **Lecturer offerings and institution venues.** The lecturer's offering list
+   is filtered using their coordinator/assignment visibility. Venue listing is
+   limited to the authenticated institution and is available to lecturers and
+   administrators:
+
+   ```cmd
+   curl.exe -i "http://localhost:8080/me/offerings?limit=20&offset=0" -H "Authorization: ******"
+   curl.exe -i "http://localhost:8080/venues?limit=20&offset=0" -H "Authorization: ******"
+   ```
+
+   `/venues` returns `items`, `limit`, `offset`, and institution-wide `total`.
+   A student caller receives `403 access_denied`.
+
 4. **Student claim and email verification.** A matching matric number and
    record email starts verification. In development, read the one-time code
-   from the API log entry named `development email`. The response is deliberately
-   identical for known and unknown matric numbers:
+   from the API log entry named `development email`. Signup start returns the
+   same `202 request_received` acknowledgement for matching, mismatched,
+   already-claimed, and unknown student records. Unknown matric numbers create
+   a department review request; mismatches and already-claimed records do not
+   trigger an email or a new account. Invalid, expired, used, and already-claimed
+   verification attempts return the same `400 invalid_verification` response.
 
    ```cmd
    curl.exe -i -X POST http://localhost:8080/auth/signup-claim -H "Content-Type: application/json" --data "{\"institution_id\":\"INSTITUTION_UUID\",\"matric_no\":\"MATRIC_NO\",\"email\":\"EMAIL_ON_STUDENT_RECORD\"}"
@@ -94,8 +123,8 @@ double quotes in `--data` JSON with single-quoted JSON strings.
 
    The first call returns `202 request_received`. The second returns `201`, an
    access token, and the refresh cookie. The student department and level come
-   from the student record, not request fields. An unknown matric number creates
-   a department review request; admin review routes are not yet available.
+   from the student record, not request fields. Admin review routes for unknown
+   matric requests are not yet available.
 
 5. **Invite a staff member.** As an institution admin, faculty admin, or
    department admin, invite a user only into a role/scope that you manage.
@@ -142,6 +171,10 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    ```cmd
    curl.exe -i -X POST http://localhost:8080/sessions -H "Authorization: Bearer ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"offering_id\":\"OFFERING_UUID\",\"venue_id\":\"VENUE_UUID\",\"rotating_code\":true,\"late_after_min\":10}"
    ```
+
+   The seeded lecturers are assigned to the seeded offerings, and each
+   offering has a timetable entry linked to its venue. Use the IDs printed by
+   the seed command if supplying `timetable_id`.
 
    Expect `201` with a session, six-digit code, and `seconds_remaining`. Save
    `session.id`. Starting another session at the same venue must return `409`

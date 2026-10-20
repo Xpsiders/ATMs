@@ -14,6 +14,13 @@ type fakeStore struct {
 	manageCalls       int
 	destinationFields map[string]any
 	filters           map[string]string
+	venueItems        []map[string]any
+	venueTotal        int64
+	venueInstitution  string
+	venueUser         string
+	venueLimit        int
+	venueOffset       int
+	venueErr          error
 }
 
 func (f *fakeStore) List(_ context.Context, _, _, _ string, _ catalogue.Resource, filters map[string]string) ([]map[string]any, error) {
@@ -53,6 +60,13 @@ func (f *fakeStore) OfferingLecturers(context.Context, string, string) ([]map[st
 }
 func (f *fakeStore) OfferingAutoTargets(context.Context, string, string) ([]catalogue.AutoTarget, error) {
 	return []catalogue.AutoTarget{}, nil
+}
+func (f *fakeStore) ListVenues(_ context.Context, institutionID, userID string, limit, offset int) ([]map[string]any, int64, error) {
+	f.venueInstitution = institutionID
+	f.venueUser = userID
+	f.venueLimit = limit
+	f.venueOffset = offset
+	return f.venueItems, f.venueTotal, f.venueErr
 }
 
 func TestListPreservesCallerFiltersAndRejectsUnknownResources(t *testing.T) {
@@ -121,5 +135,51 @@ func TestOfferingReadDenialForOutOfScopeUser(t *testing.T) {
 	}
 	if _, err := service.OfferingAutoTargets(context.Background(), "inst", "other-department-admin", "offering"); !errors.Is(err, catalogue.ErrForbidden) {
 		t.Fatalf("out-of-scope offering auto-target read error = %v", err)
+	}
+}
+
+func TestListVenuesValidatesPaginationAndPropagatesResourceScope(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{
+		venueItems: []map[string]any{{"id": "venue-a"}},
+		venueTotal: 3,
+		venueErr:   catalogue.ErrForbidden,
+	}
+	service, err := catalogue.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ListVenues(context.Background(), "inst", "lecturer", 0, 0); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("zero limit error=%v", err)
+	}
+	if _, err := service.ListVenues(context.Background(), "inst", "lecturer", 201, 0); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("oversized limit error=%v", err)
+	}
+	if _, err := service.ListVenues(context.Background(), "inst", "lecturer", 10, -1); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("negative offset error=%v", err)
+	}
+	if _, err := service.ListVenues(context.Background(), "inst", "student", 10, 20); !errors.Is(err, catalogue.ErrForbidden) {
+		t.Fatalf("out-of-scope venue list error=%v", err)
+	}
+	if store.venueInstitution != "inst" || store.venueUser != "student" ||
+		store.venueLimit != 10 || store.venueOffset != 20 {
+		t.Fatalf("store scope/pagination = %q %q %d %d",
+			store.venueInstitution, store.venueUser, store.venueLimit, store.venueOffset)
+	}
+}
+
+func TestListVenuesReturnsTenantScopedPage(t *testing.T) {
+	t.Parallel()
+	store := &fakeStore{venueItems: []map[string]any{{"id": "venue-a"}}, venueTotal: 7}
+	service, err := catalogue.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ListVenues(context.Background(), "inst", "lecturer", 5, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Total != 7 || page.Limit != 5 || page.Offset != 10 {
+		t.Fatalf("unexpected venue page: %+v", page)
 	}
 }

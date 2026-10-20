@@ -66,6 +66,24 @@ type SessionStore interface {
 	End(context.Context, string, string, time.Time) (Session, error)
 }
 
+type LiveClass struct {
+	SessionID        string    `json:"session_id"`
+	OfferingID       string    `json:"offering_id"`
+	CourseCode       string    `json:"course_code"`
+	CourseTitle      string    `json:"course_title"`
+	VenueID          string    `json:"venue_id"`
+	VenueName        string    `json:"venue_name"`
+	LecturerName     string    `json:"lecturer_name"`
+	StartedAt        time.Time `json:"started_at"`
+	LateAfterMin     int       `json:"late_after_min"`
+	RotatingCode     bool      `json:"rotating_code"`
+	AlreadyCheckedIn bool      `json:"already_checked_in"`
+}
+
+type LiveClassStore interface {
+	ListLiveClasses(context.Context, string, string, string) ([]LiveClass, error)
+}
+
 type FixedCodeStore interface {
 	ConvertToFixedCode(context.Context, string, string, string, string, time.Time) (Session, error)
 }
@@ -260,6 +278,24 @@ func (s *Service) End(ctx context.Context, institutionID, sessionID string) (Ses
 		return Session{}, fmt.Errorf("end lecture session: %w", err)
 	}
 	return session, nil
+}
+
+func (s *Service) LiveClasses(ctx context.Context, institutionID, userID, studentID string) ([]LiveClass, error) {
+	store, ok := s.store.(LiveClassStore)
+	if !ok {
+		return nil, errors.New("live classes are not supported by this store")
+	}
+	if institutionID == "" || userID == "" || studentID == "" {
+		return nil, errors.New("institution, user, and student IDs are required")
+	}
+	items, err := store.ListLiveClasses(ctx, institutionID, userID, studentID)
+	if err != nil {
+		return nil, fmt.Errorf("list live classes: %w", err)
+	}
+	if items == nil {
+		items = []LiveClass{}
+	}
+	return items, nil
 }
 
 func (s *Service) newStaticCode() (string, error) {

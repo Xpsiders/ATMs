@@ -72,6 +72,35 @@ that every phase or database-backed behavior is complete. See
   checks passed: `gofmt -l .` (no output), `go vet ./...`, `go build ./...`,
   and `go test ./...`. OpenAPI validation passed with four recommended-rule
   warnings. PostgreSQL-backed queries remain unverified.
+- Student claim start now returns one acknowledgement for matching,
+  mismatched, already-claimed, and unknown records; verification failures and
+  already-claimed records share the same error envelope. The OpenAPI contract,
+  handler tests, and manual walkthrough were updated. Focused
+  `go test ./internal/auth` passed. Persistent attempt caps and live PostgreSQL
+  verification remain open.
+- Demo seed now defines accounts for all six supported role types, including
+  new faculty-admin and platform-admin fixtures. Role scopes are explicit and
+  the seed credential output includes the login passwords. Seed unit tests
+  require complete role coverage and valid scope assignments. The updated
+  seed has not been executed against PostgreSQL in this environment.
+- Student `GET /me/live-classes` now requires a claimed student identity and
+  lists only open sessions for that student's approved registrations. Its
+  tenant/user-bound query includes venue and lecturer metadata, web and
+  fingerprint check-in state, and no attendance code. `GET /me/offerings`
+  applies the existing resource visibility rules and pagination. `GET /venues`
+  enforces the caller's tenant and permits lecturers/admin roles only, with
+  page and total queries. The demo seed now connects each lecturer to an
+  offering and venue via a timetable entry and approves demo student
+  registrations. These paths have unit and generated-query scope tests; the
+  seed and SQL have not been run against PostgreSQL.
+- HTTP request-completion logs now include the standard machine-readable
+  `error_code` for 4xx/5xx responses without logging request or response
+  bodies. Student claim start/verify responses also conceal record eligibility
+  as described above.
+- Latest checks for the endpoint work: `gofmt -l .` produced no output;
+  `go vet ./...`, `go build ./...`, and `go test ./...` passed. OpenAPI
+  validation passed with the four existing recommended-rule warnings listed
+  above. The database-backed seed and queries remain unverified.
 
 ## Next priority
 

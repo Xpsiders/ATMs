@@ -46,20 +46,21 @@ func (h *ClaimHandler) start(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := h.service.Start(r.Context(), request.InstitutionID, request.MatricNo, request.Email)
 	switch {
-	case errors.Is(err, ErrClaimEmailMismatch):
-		httpx.WriteError(w, http.StatusBadRequest, "claim_email_mismatch",
-			"Email does not match the student record", nil)
-	case errors.Is(err, ErrStudentAlreadyClaimed):
-		httpx.WriteError(w, http.StatusConflict, "student_already_claimed", "Student record has already been claimed", nil)
+	case errors.Is(err, ErrClaimEmailMismatch), errors.Is(err, ErrStudentAlreadyClaimed):
+		writeClaimAcknowledgement(w)
 	case err != nil:
 		slog.ErrorContext(r.Context(), "student claim request failed", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to start student claim", nil)
 	default:
-		httpx.WriteJSON(w, http.StatusAccepted, map[string]string{
-			"status":  "request_received",
-			"message": "If a matching record exists, a verification email will be sent; otherwise the request will be reviewed.",
-		})
+		writeClaimAcknowledgement(w)
 	}
+}
+
+func writeClaimAcknowledgement(w http.ResponseWriter) {
+	httpx.WriteJSON(w, http.StatusAccepted, map[string]string{
+		"status":  "request_received",
+		"message": "If the details match an eligible student record, a verification email will be sent.",
+	})
 }
 
 func (h *ClaimHandler) verify(w http.ResponseWriter, r *http.Request) {
@@ -78,12 +79,8 @@ func (h *ClaimHandler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	claimed, err := h.service.Verify(r.Context(), request.InstitutionID, request.MatricNo, request.Code, request.Password)
-	if errors.Is(err, ErrInvalidVerification) {
+	if errors.Is(err, ErrInvalidVerification) || errors.Is(err, ErrStudentAlreadyClaimed) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_verification", "Verification code is invalid, expired, or already used", nil)
-		return
-	}
-	if errors.Is(err, ErrStudentAlreadyClaimed) {
-		httpx.WriteError(w, http.StatusConflict, "student_already_claimed", "Student record has already been claimed", nil)
 		return
 	}
 	if errors.Is(err, ErrWeakPassword) {

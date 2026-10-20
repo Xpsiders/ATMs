@@ -39,6 +39,17 @@ type Store interface {
 	OfferingAutoTargets(context.Context, string, string) ([]AutoTarget, error)
 }
 
+type VenueListingStore interface {
+	ListVenues(context.Context, string, string, int, int) ([]map[string]any, int64, error)
+}
+
+type VenuePage struct {
+	Items  []map[string]any `json:"items"`
+	Limit  int              `json:"limit"`
+	Offset int              `json:"offset"`
+	Total  int64            `json:"total"`
+}
+
 type AutoTarget struct {
 	DepartmentID string `json:"department_id" validate:"required,uuid"`
 	Level        int    `json:"level" validate:"required,gte=1,lte=100"`
@@ -67,6 +78,24 @@ func (s *Service) List(ctx context.Context, institutionID, userID, studentID str
 		cleanFilters[key] = value
 	}
 	return s.store.List(ctx, institutionID, userID, studentID, resource, cleanFilters)
+}
+
+func (s *Service) ListVenues(ctx context.Context, institutionID, userID string, limit, offset int) (VenuePage, error) {
+	if institutionID == "" || userID == "" || limit < 1 || limit > 200 || offset < 0 {
+		return VenuePage{}, ErrInvalidRequest
+	}
+	store, ok := s.store.(VenueListingStore)
+	if !ok {
+		return VenuePage{}, errors.New("venue listing is not supported by this store")
+	}
+	items, total, err := store.ListVenues(ctx, institutionID, userID, limit, offset)
+	if err != nil {
+		return VenuePage{}, err
+	}
+	if items == nil {
+		items = []map[string]any{}
+	}
+	return VenuePage{Items: items, Limit: limit, Offset: offset, Total: total}, nil
 }
 
 func (s *Service) Create(ctx context.Context, institutionID, userID string, resource Resource, fields map[string]any) (map[string]any, error) {
