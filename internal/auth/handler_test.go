@@ -25,6 +25,9 @@ func TestLoginHandlerResponseAndRefreshCookie(t *testing.T) {
 	repository := fakeLoginRepository{found: true, record: auth.LoginRecord{
 		Identity:     auth.Identity{InstitutionID: "institution-1", UserID: "user-1"},
 		PasswordHash: hash, EmailVerified: true,
+	}, profile: auth.UserProfile{
+		ID: "user-1", Name: "Demo User", Email: "user@example.test", Status: "active",
+		Roles: []auth.UserRole{{Role: "institution_admin", ScopeType: "institution", ScopeID: stringPointer("institution-1")}},
 	}}
 	service, err := auth.NewLoginService(repository, tokens)
 	if err != nil {
@@ -47,8 +50,16 @@ func TestLoginHandlerResponseAndRefreshCookie(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &bodyJSON); err != nil {
 		t.Fatal(err)
 	}
-	if bodyJSON["access_token"] == "" || bodyJSON["refresh_token"] != nil {
+	if bodyJSON["access_token"] == "" || bodyJSON["refresh_token"] != nil ||
+		bodyJSON["id"] != "user-1" || bodyJSON["name"] != "Demo User" ||
+		bodyJSON["email"] != "user@example.test" || bodyJSON["status"] != "active" ||
+		bodyJSON["must_change_password"] != false {
 		t.Fatalf("login response exposes wrong tokens: %v", bodyJSON)
+	}
+	roles, ok := bodyJSON["roles"].([]any)
+	if !ok || len(roles) != 1 || roles[0].(map[string]any)["scope_type"] != "institution" ||
+		roles[0].(map[string]any)["scope_id"] != "institution-1" {
+		t.Fatalf("login roles = %v", bodyJSON["roles"])
 	}
 	cookie := response.Result().Cookies()[0]
 	if cookie.Name != auth.RefreshCookieName || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
@@ -69,6 +80,64 @@ func TestLoginHandlerResponseAndRefreshCookie(t *testing.T) {
 	router.ServeHTTP(logoutResponse, logoutRequest)
 	if logoutResponse.Code != http.StatusNoContent {
 		t.Fatalf("logout status = %d", logoutResponse.Code)
+	}
+}
+
+func TestMeReturnsUserProfileWithStudentScopeAndLockedAttributes(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewFakeClock(time.Unix(1_700_000_000, 0))
+	tokens, _ := newTestTokens(t, clock)
+	repository := fakeLoginRepository{found: true, profile: auth.UserProfile{
+		ID: "user-1", Name: "Student One", Email: "student@example.test", Status: "active",
+		MustChangePassword: true,
+		Roles: []auth.UserRole{{
+			Role: "student", ScopeType: "department", ScopeID: stringPointer("department-1"),
+			DepartmentID: "department-1", Level: intPointer(200),
+		}},
+	}}
+	service, err := auth.NewLoginService(repository, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := auth.NewHandler(service, false, http.SameSiteLaxMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	handler.RegisterRoutes(router)
+	accessToken, err := tokens.IssueAccess(auth.Identity{
+		InstitutionID: "institution-1", UserID: "user-1", ForcePassword: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/me", nil)
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("/me status=%d body=%s", response.Code, response.Body.String())
+	}
+	var bodyJSON map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &bodyJSON); err != nil {
+		t.Fatal(err)
+	}
+	if bodyJSON["id"] != "user-1" || bodyJSON["name"] != "Student One" ||
+		bodyJSON["email"] != "student@example.test" || bodyJSON["status"] != "active" ||
+		bodyJSON["must_change_password"] != true {
+		t.Fatalf("/me profile = %v", bodyJSON)
+	}
+	roles, ok := bodyJSON["roles"].([]any)
+	if !ok || len(roles) != 1 {
+		t.Fatalf("/me roles = %v", bodyJSON["roles"])
+	}
+	studentRole, ok := roles[0].(map[string]any)
+	if !ok || studentRole["role"] != "student" ||
+		studentRole["scope_type"] != "department" ||
+		studentRole["scope_id"] != "department-1" ||
+		studentRole["department_id"] != "department-1" ||
+		studentRole["level"] != float64(200) {
+		t.Fatalf("/me student role = %v", roles[0])
 	}
 }
 

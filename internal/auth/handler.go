@@ -30,6 +30,7 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.With(httpx.RateLimitByIP(5, time.Minute)).Post("/auth/login", h.login)
 	router.With(httpx.RateLimitByIP(10, time.Minute)).Post("/auth/refresh", h.refresh)
 	router.With(httpx.RateLimitByIP(20, time.Minute)).Post("/auth/logout", h.logout)
+	router.With(UserAuth(h.service.tokens), UserRateLimit(30, time.Minute)).Get("/me", h.me)
 	router.With(UserAuth(h.service.tokens), UserRateLimit(10, time.Minute)).Post("/auth/password/change", h.changePassword)
 }
 
@@ -64,7 +65,32 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setRefreshCookie(w, pair.RefreshToken)
 	pair.RefreshToken = ""
-	httpx.WriteJSON(w, http.StatusOK, pair)
+	httpx.WriteJSON(w, http.StatusOK, LoginResponse{
+		AccessToken: pair.AccessToken, ExpiresIn: pair.ExpiresIn, ForceChange: pair.ForceChange,
+		MustChangePassword: pair.Profile.MustChangePassword,
+		ID:                 pair.Profile.ID, Name: pair.Profile.Name, Email: pair.Profile.Email,
+		Status: pair.Profile.Status, Roles: pair.Profile.Roles,
+	})
+}
+
+func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "authentication_required", "A bearer token is required", nil)
+		return
+	}
+	profile, found, err := h.service.UserProfile(r.Context(),
+		principal.Identity.InstitutionID, principal.Identity.UserID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "load current user profile failed", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to load user profile", nil)
+		return
+	}
+	if !found {
+		httpx.WriteError(w, http.StatusNotFound, "user_not_found", "User profile was not found", nil)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, profile)
 }
 
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {

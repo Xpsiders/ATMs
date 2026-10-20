@@ -11,12 +11,28 @@ import (
 )
 
 type fakeLoginRepository struct {
-	record auth.LoginRecord
-	found  bool
+	record  auth.LoginRecord
+	found   bool
+	profile auth.UserProfile
 }
 
 func (r fakeLoginRepository) FindLogin(context.Context, string, string) (auth.LoginRecord, bool, error) {
 	return r.record, r.found, nil
+}
+
+func (r fakeLoginRepository) FindUserProfile(context.Context, string, string) (auth.UserProfile, bool, error) {
+	if !r.found {
+		return auth.UserProfile{}, false, nil
+	}
+	profile := r.profile
+	if profile.ID == "" {
+		profile = auth.UserProfile{
+			ID: r.record.Identity.UserID, Name: "Test User", Email: "user@example.test",
+			Status: "active", MustChangePassword: r.record.Identity.ForcePassword,
+			Roles: []auth.UserRole{},
+		}
+	}
+	return profile, true, nil
 }
 
 func (r fakeLoginRepository) FindPasswordHash(context.Context, string, string) (string, bool, error) {
@@ -26,6 +42,10 @@ func (r fakeLoginRepository) FindPasswordHash(context.Context, string, string) (
 func (r fakeLoginRepository) UpdatePasswordHash(context.Context, string, string, string) (bool, error) {
 	return r.found, nil
 }
+
+func stringPointer(value string) *string { return &value }
+
+func intPointer(value int) *int { return &value }
 
 func TestLoginIssuesTokensAndHonorsEmailVerification(t *testing.T) {
 	t.Parallel()
@@ -41,11 +61,19 @@ func TestLoginIssuesTokensAndHonorsEmailVerification(t *testing.T) {
 			Level: 200, ForcePassword: true,
 		},
 		PasswordHash: passwordHash, EmailVerified: true,
+	}, profile: auth.UserProfile{
+		ID: "u1", Name: "Student One", Email: "student@example.test", Status: "active",
+		MustChangePassword: true,
+		Roles: []auth.UserRole{{
+			Role: "student", ScopeType: "department", ScopeID: stringPointer("d1"),
+			DepartmentID: "d1", Level: intPointer(200),
+		}},
 	}}
 	service, err := auth.NewLoginService(repository, tokens)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	pair, err := service.Login(context.Background(), "i1", "student@example.test", "correct horse battery staple")
 	if err != nil || pair.AccessToken == "" || pair.RefreshToken == "" || !pair.ForceChange {
 		t.Fatalf("login pair = %+v, %v", pair, err)

@@ -60,6 +60,31 @@ UPDATE users
 SET password_hash = $3, force_password_change = false
 WHERE institution_id = $1 AND id = $2 AND disabled_at IS NULL;
 
+-- name: GetUserProfile :one
+SELECT id, display_name, email,
+       CASE WHEN disabled_at IS NULL THEN 'active' ELSE 'disabled' END::text AS status,
+       force_password_change
+FROM users
+WHERE institution_id = $1 AND id = $2;
+
+-- name: GetUserRoles :many
+SELECT assignment.role, assignment.scope_type,
+       CASE assignment.scope_type
+           WHEN 'institution' THEN assignment.institution_id
+           WHEN 'faculty' THEN assignment.faculty_id
+           WHEN 'department' THEN assignment.department_id
+           ELSE NULL::uuid
+       END AS scope_id,
+       student.department_id,
+       student.level
+FROM role_assignments AS assignment
+LEFT JOIN student_records AS student
+  ON student.institution_id = assignment.institution_id
+ AND student.claimed_by_user_id = assignment.user_id
+ AND assignment.role = 'student'
+WHERE assignment.institution_id = $1 AND assignment.user_id = $2
+ORDER BY assignment.role, assignment.scope_type, scope_id;
+
 -- name: FindStudentByMatric :one
 SELECT id, institution_id, department_id, matric_no, email, display_name, level,
        claimed_by_user_id

@@ -82,11 +82,22 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TokenResponse"
+                $ref: "#/components/schemas/LoginResponse"
               example:
                 access_token: eyJhbGciOiJIUzI1NiJ9.example.signature
                 expires_in: 900
                 force_password_change: false
+                must_change_password: false
+                id: 45a29ed4-00d8-44fd-bdfc-82dd15c1fba0
+                name: Alex Student
+                email: student@example.test
+                status: active
+                roles:
+                  - role: student
+                    scope_type: department
+                    scope_id: 10000000-0000-4000-8000-000000000003
+                    department_id: 10000000-0000-4000-8000-000000000003
+                    level: 200
         "400":
           $ref: "#/components/responses/InvalidJSON"
         "401":
@@ -102,6 +113,41 @@ paths:
                   code: email_not_verified
                   message: Student email has not been verified
                   details: {}
+  /me:
+    get:
+      operationId: getCurrentUser
+      summary: Get the authenticated user's profile and scoped roles
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user profile. Student roles include the locked home department and level.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+              example:
+                id: 45a29ed4-00d8-44fd-bdfc-82dd15c1fba0
+                name: Alex Student
+                email: student@example.test
+                status: active
+                must_change_password: false
+                roles:
+                  - role: student
+                    scope_type: department
+                    scope_id: 10000000-0000-4000-8000-000000000003
+                    department_id: 10000000-0000-4000-8000-000000000003
+                    level: 200
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Authenticated user no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /auth/refresh:
     post:
       operationId: refreshAccessToken
@@ -2240,6 +2286,51 @@ components:
           example: 900
         force_password_change:
           type: boolean
+    LoginResponse:
+      allOf:
+        - $ref: "#/components/schemas/TokenResponse"
+        - $ref: "#/components/schemas/UserProfile"
+    UserProfile:
+      type: object
+      required: [id, name, email, status, must_change_password, roles]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        status:
+          type: string
+          enum: [active, disabled]
+        must_change_password:
+          type: boolean
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserRole"
+    UserRole:
+      type: object
+      required: [role, scope_type, scope_id]
+      properties:
+        role:
+          type: string
+          enum: [platform_admin, institution_admin, faculty_admin, department_admin, lecturer, student]
+        scope_type:
+          type: string
+          enum: [platform, institution, faculty, department]
+        scope_id:
+          type: [string, "null"]
+          format: uuid
+        department_id:
+          type: string
+          format: uuid
+          description: Present for student roles; identifies the locked home department.
+        level:
+          type: integer
+          description: Present for student roles; identifies the locked academic level.
     CheckinRequest:
       type: object
       required: [session_id, code, lat, lng, accuracy]

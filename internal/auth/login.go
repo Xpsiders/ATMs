@@ -22,6 +22,24 @@ type LoginRecord struct {
 
 type LoginRepository interface {
 	FindLogin(context.Context, string, string) (LoginRecord, bool, error)
+	FindUserProfile(context.Context, string, string) (UserProfile, bool, error)
+}
+
+type UserProfile struct {
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Email              string     `json:"email"`
+	Status             string     `json:"status"`
+	MustChangePassword bool       `json:"must_change_password"`
+	Roles              []UserRole `json:"roles"`
+}
+
+type UserRole struct {
+	Role         string  `json:"role"`
+	ScopeType    string  `json:"scope_type"`
+	ScopeID      *string `json:"scope_id"`
+	DepartmentID string  `json:"department_id,omitempty"`
+	Level        *int    `json:"level,omitempty"`
 }
 
 type PasswordRepository interface {
@@ -36,10 +54,23 @@ type LoginService struct {
 }
 
 type TokenPair struct {
-	AccessToken  string `json:"access_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	ForceChange  bool   `json:"force_password_change"`
-	RefreshToken string `json:"-"`
+	AccessToken  string      `json:"access_token"`
+	ExpiresIn    int         `json:"expires_in"`
+	ForceChange  bool        `json:"force_password_change"`
+	RefreshToken string      `json:"-"`
+	Profile      UserProfile `json:"-"`
+}
+
+type LoginResponse struct {
+	AccessToken        string     `json:"access_token"`
+	ExpiresIn          int        `json:"expires_in"`
+	ForceChange        bool       `json:"force_password_change"`
+	MustChangePassword bool       `json:"must_change_password"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Email              string     `json:"email"`
+	Status             string     `json:"status"`
+	Roles              []UserRole `json:"roles"`
 }
 
 func NewLoginService(repository LoginRepository, tokens *TokenManager) (*LoginService, error) {
@@ -73,6 +104,13 @@ func (s *LoginService) Login(ctx context.Context, institutionID, email, password
 	if record.Identity.StudentID != "" && !record.EmailVerified {
 		return TokenPair{}, ErrEmailNotVerified
 	}
+	profile, found, err := s.findUserProfile(ctx, record.Identity.InstitutionID, record.Identity.UserID)
+	if err != nil {
+		return TokenPair{}, fmt.Errorf("load login user profile: %w", err)
+	}
+	if !found || profile.Status != "active" {
+		return TokenPair{}, ErrInvalidCredentials
+	}
 	access, err := s.tokens.IssueAccess(record.Identity)
 	if err != nil {
 		return TokenPair{}, err
@@ -83,8 +121,20 @@ func (s *LoginService) Login(ctx context.Context, institutionID, email, password
 	}
 	return TokenPair{
 		AccessToken: access, ExpiresIn: int(AccessTokenLifetime.Seconds()),
-		ForceChange: record.Identity.ForcePassword, RefreshToken: refresh,
+		ForceChange: record.Identity.ForcePassword, RefreshToken: refresh, Profile: profile,
 	}, nil
+}
+
+func (s *LoginService) UserProfile(ctx context.Context, institutionID, userID string) (UserProfile, bool, error) {
+	return s.findUserProfile(ctx, institutionID, userID)
+}
+
+func (s *LoginService) findUserProfile(ctx context.Context, institutionID, userID string) (UserProfile, bool, error) {
+	profile, found, err := s.repository.FindUserProfile(ctx, institutionID, userID)
+	if err != nil {
+		return UserProfile{}, false, fmt.Errorf("find user profile: %w", err)
+	}
+	return profile, found, nil
 }
 
 func (s *LoginService) Refresh(ctx context.Context, refreshToken string) (TokenPair, error) {

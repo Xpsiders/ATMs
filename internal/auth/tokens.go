@@ -217,7 +217,8 @@ func UserAuth(manager *TokenManager) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusUnauthorized, "invalid_token", "Access token is invalid or expired", nil)
 				return
 			}
-			if claims.ForcePassword && r.URL.Path != "/auth/password/change" && r.URL.Path != "/auth/logout" {
+			if claims.ForcePassword && r.URL.Path != "/auth/password/change" &&
+				r.URL.Path != "/auth/logout" && r.URL.Path != "/me" {
 				httpx.WriteError(w, http.StatusForbidden, "password_change_required", "Change your password before continuing", nil)
 				return
 			}

@@ -8,8 +8,7 @@ that every phase or database-backed behavior is complete. See
 ## Repository and environment
 
 - Workspace: `C:\Dev\ATMs`; Go module: `attendance-api`.
-- This directory is not a Git repository, so per-task commits cannot be made
-  here unless it is moved into or initialized as a repository.
+- This directory is a Git repository on `master`; commits are available.
 - `docs/HANDOFF.md` was absent when the handoff instructions were first checked;
   this file now records the current state.
 - Docker Desktop is paused. PostgreSQL migrations, seed execution, and
@@ -64,21 +63,23 @@ that every phase or database-backed behavior is complete. See
   `go vet ./...`, `go build ./...`, and `go test ./...` all exited successfully.
   The passing test packages include `internal/httpx`; packages with no test
   files are listed as such by `go test`.
+- Login and authenticated `GET /me` now return the ID, name, email, status,
+  `must_change_password`, and role assignments with their resource-derived
+  scopes; student roles include the locked department and level. Login
+  preserves `force_password_change` for compatibility, and `/me` is available
+  to password-change-required tokens. OpenAPI, SQL/sqlc bindings, unit tests,
+  decisions, progress, and the manual walkthrough were updated. The current
+  checks passed: `gofmt -l .` (no output), `go vet ./...`, `go build ./...`,
+  and `go test ./...`. OpenAPI validation passed with four recommended-rule
+  warnings. PostgreSQL-backed queries remain unverified.
 
-## Current next priority: test utilities
+## Next priority
 
-The next partial item after the Phase 0 HTTP foundation is the FakeClock and
-in-memory test helpers. Assess the existing test utilities and add only a
-missing, reusable helper with deterministic unit coverage. Follow the task
-order in `docs/PROGRESS.md` before moving to later feature groups such as
-device-key management.
-
-## Remaining priority order
-
-After Phase 0's partial items, continue down `docs/PROGRESS.md` in order.
-Aggregate reports, percentage and below-threshold queries, CSV export
-hardening, and the email outbox worker remain later priority work. Update this
-handoff whenever active work materially changes.
+Continue using the active order in `docs/PROGRESS.md`. Database verification
+of the catalogue scope queries and seed loader remains blocked while Docker
+Desktop is paused; code work still outstanding includes staff CSV imports,
+signup-request review, device-key provisioning/rotation/revocation, aggregate
+reports, and the email outbox worker.
 
 ## Do not claim complete
 

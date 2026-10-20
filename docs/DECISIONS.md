@@ -63,6 +63,18 @@ resolved.
   student capability in one PostgreSQL transaction. Department and level are
   taken only from the locked student record.
 
+## Current-user profile response
+
+- Login and `GET /me` return profile and role fields at the top level. Role
+  scope IDs are resolved from the stored role assignments; platform scope has
+  a null `scope_id`, while institution, faculty, and department scopes use
+  their corresponding resource ID. Student roles additionally include the
+  student's locked home `department_id` and `level`.
+- Keep `force_password_change` in the login token response for compatibility,
+  and include the clearer `must_change_password` profile field in both login
+  and `/me`. The `/me` endpoint remains accessible with a forced-change token
+  so the client can determine the required next action.
+
 ## Staff invitations
 
 - Staff invitations expire after seven days and use a random 32-byte token;

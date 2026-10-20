@@ -25,13 +25,13 @@ checklist, not a claim that database-backed behavior has been exercised.
 |---|---|---|
 | Institution/faculty/department/programme schema and APIs | Partial | Catalogue APIs and resource-derived scope checks are implemented and unit-tested; database behavior and remaining endpoints require verification. |
 | Users, role assignments, student records and tenant constraints | Partial | Identity schema and tenant-aware queries exist; full schema/query audit remains. |
-| Login, bcrypt passwords, access JWT, refresh-token rotation/revocation | Partial | Login and refresh behavior exists; complete security hardening and live DB verification remain. |
+| Login, bcrypt passwords, access JWT, refresh-token rotation/revocation | Partial | Login includes the current profile and scoped roles, and authenticated `GET /me` returns the same profile; token hardening and live DB verification remain. |
 | Verified student signup claim and one-time verification codes | Partial | Claim start/verification services and routes exist; integration and edge-case verification remain. |
 | Unknown-matric signup approval requests and admin review | Partial | Request persistence exists; review API is absent. |
 | Invitations | Partial | Scoped staff invitations and acceptance are implemented with hashed one-time tokens, issuer scope checks, transactional role creation/audit, and unit tests; live PostgreSQL verification remains. |
 | Password reset | Not started | |
 | Student/staff CSV import and row validation | Partial | Student CSV parsing, scoped preview, atomic commit, row-level errors, size limits, and concurrent matric conflict handling are implemented and unit-tested; staff import remains absent and PostgreSQL behavior is unverified. |
-| Authentication and identity unit tests | Partial | Existing unit tests cover implemented slices; full requirement matrix not met. |
+| Authentication and identity unit tests | Partial | Unit tests cover login and `/me` profile/role JSON, including student department/level; the full identity requirement matrix remains incomplete. |
 
 ## Phase 2 — Academics, catalogue and registration
 

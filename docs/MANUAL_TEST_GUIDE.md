@@ -62,8 +62,21 @@ double quotes in `--data` JSON with single-quoted JSON strings.
 
    For example, institution admin is `admin@attendance.test` /
    `DemoAdmin-2026!`; other seeded roles are printed by the seed command.
-   Expect a JSON `access_token`, `expires_in: 900`, and `force_password_change`;
-   save the refresh cookie from `Set-Cookie`. The token is used as
+   Expect a JSON `access_token`, `expires_in: 900`, `force_password_change`,
+   `must_change_password`, `id`, `name`, `email`, `status`, and a `roles` array.
+   Each role includes `role`, `scope_type`, and `scope_id`; student roles also
+   include their locked `department_id` and `level`. Fetch the profile again
+   with the access token:
+
+   ```cmd
+   curl.exe -i http://localhost:8080/me -H "Authorization: Bearer ACCESS_TOKEN"
+   ```
+
+   Expect `200` with the same user profile fields and role scopes. This route
+   remains available when a forced password change is required so the client
+   can read the `must_change_password` flag.
+   Save the access token and the refresh cookie from `Set-Cookie`. Use the
+   access token as
    `Authorization: Bearer ACCESS_TOKEN`. Refresh with
    `curl.exe -i -X POST http://localhost:8080/auth/refresh -b "attendance_refresh=REFRESH_COOKIE"`.
    Logout with `curl.exe -i -X POST http://localhost:8080/auth/logout -b

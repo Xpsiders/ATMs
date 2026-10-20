@@ -57,6 +57,52 @@ func (s *PostgresStore) FindLogin(ctx context.Context, institutionIDText, email 
 	}, true, nil
 }
 
+func (s *PostgresStore) FindUserProfile(ctx context.Context, institutionIDText, userIDText string) (UserProfile, bool, error) {
+	institutionID, err := db.ParseUUID(institutionIDText)
+	if err != nil {
+		return UserProfile{}, false, fmt.Errorf("parse profile institution ID: %w", err)
+	}
+	userID, err := db.ParseUUID(userIDText)
+	if err != nil {
+		return UserProfile{}, false, fmt.Errorf("parse profile user ID: %w", err)
+	}
+	row, err := s.queries.GetUserProfile(ctx, dbgen.GetUserProfileParams{
+		InstitutionID: institutionID, ID: userID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UserProfile{}, false, nil
+	}
+	if err != nil {
+		return UserProfile{}, false, fmt.Errorf("query user profile: %w", err)
+	}
+	roleRows, err := s.queries.GetUserRoles(ctx, dbgen.GetUserRolesParams{
+		InstitutionID: institutionID, UserID: userID,
+	})
+	if err != nil {
+		return UserProfile{}, false, fmt.Errorf("query user roles: %w", err)
+	}
+	roles := make([]UserRole, 0, len(roleRows))
+	for _, role := range roleRows {
+		item := UserRole{Role: role.Role, ScopeType: role.ScopeType}
+		if role.ScopeID.Valid {
+			scopeID := role.ScopeID.String()
+			item.ScopeID = &scopeID
+		}
+		if role.DepartmentID.Valid {
+			item.DepartmentID = role.DepartmentID.String()
+		}
+		if role.Level.Valid {
+			level := int(role.Level.Int32)
+			item.Level = &level
+		}
+		roles = append(roles, item)
+	}
+	return UserProfile{
+		ID: row.ID.String(), Name: row.DisplayName, Email: row.Email, Status: row.Status,
+		MustChangePassword: row.ForcePasswordChange, Roles: roles,
+	}, true, nil
+}
+
 func (s *PostgresStore) FindPasswordHash(ctx context.Context, institutionIDText, userIDText string) (string, bool, error) {
 	institutionID, err := db.ParseUUID(institutionIDText)
 	if err != nil {

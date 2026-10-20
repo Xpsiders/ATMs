@@ -1056,6 +1056,98 @@ func (q *Queries) GetStudentClaimTarget(ctx context.Context, arg GetStudentClaim
 	return email, err
 }
 
+const getUserProfile = `-- name: GetUserProfile :one
+SELECT id, display_name, email,
+       CASE WHEN disabled_at IS NULL THEN 'active' ELSE 'disabled' END::text AS status,
+       force_password_change
+FROM users
+WHERE institution_id = $1 AND id = $2
+`
+
+type GetUserProfileParams struct {
+	InstitutionID pgtype.UUID `json:"institution_id"`
+	ID            pgtype.UUID `json:"id"`
+}
+
+type GetUserProfileRow struct {
+	ID                  pgtype.UUID `json:"id"`
+	DisplayName         string      `json:"display_name"`
+	Email               string      `json:"email"`
+	Status              string      `json:"status"`
+	ForcePasswordChange bool        `json:"force_password_change"`
+}
+
+func (q *Queries) GetUserProfile(ctx context.Context, arg GetUserProfileParams) (GetUserProfileRow, error) {
+	row := q.db.QueryRow(ctx, getUserProfile, arg.InstitutionID, arg.ID)
+	var i GetUserProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.DisplayName,
+		&i.Email,
+		&i.Status,
+		&i.ForcePasswordChange,
+	)
+	return i, err
+}
+
+const getUserRoles = `-- name: GetUserRoles :many
+SELECT assignment.role, assignment.scope_type,
+       CASE assignment.scope_type
+           WHEN 'institution' THEN assignment.institution_id
+           WHEN 'faculty' THEN assignment.faculty_id
+           WHEN 'department' THEN assignment.department_id
+           ELSE NULL::uuid
+       END AS scope_id,
+       student.department_id,
+       student.level
+FROM role_assignments AS assignment
+LEFT JOIN student_records AS student
+  ON student.institution_id = assignment.institution_id
+ AND student.claimed_by_user_id = assignment.user_id
+ AND assignment.role = 'student'
+WHERE assignment.institution_id = $1 AND assignment.user_id = $2
+ORDER BY assignment.role, assignment.scope_type, scope_id
+`
+
+type GetUserRolesParams struct {
+	InstitutionID pgtype.UUID `json:"institution_id"`
+	UserID        pgtype.UUID `json:"user_id"`
+}
+
+type GetUserRolesRow struct {
+	Role         string      `json:"role"`
+	ScopeType    string      `json:"scope_type"`
+	ScopeID      pgtype.UUID `json:"scope_id"`
+	DepartmentID pgtype.UUID `json:"department_id"`
+	Level        pgtype.Int4 `json:"level"`
+}
+
+func (q *Queries) GetUserRoles(ctx context.Context, arg GetUserRolesParams) ([]GetUserRolesRow, error) {
+	rows, err := q.db.Query(ctx, getUserRoles, arg.InstitutionID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetUserRolesRow
+	for rows.Next() {
+		var i GetUserRolesRow
+		if err := rows.Scan(
+			&i.Role,
+			&i.ScopeType,
+			&i.ScopeID,
+			&i.DepartmentID,
+			&i.Level,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getVenueSettings = `-- name: GetVenueSettings :one
 SELECT latitude, longitude, radius_meters
 FROM venues
