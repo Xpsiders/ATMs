@@ -241,12 +241,16 @@ func (s *Store) searchOfferings(ctx context.Context, tenant, user, student pgtyp
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, map[string]any{
-			"offering_id": db.NormalizeUUIDValue(row.OfferingID), "course_id": db.NormalizeUUIDValue(row.CourseID),
+		item := map[string]any{
+			"offering_id": row.OfferingID, "course_id": row.CourseID,
 			"code": row.Code, "title": row.Title, "kind": row.Kind,
-			"department_id": db.NormalizeUUIDValue(row.DepartmentID), "department_name": row.DepartmentName,
-			"semester_id": db.NormalizeUUIDValue(row.SemesterID), "semester": row.Semester, "rank": row.Rank,
-		})
+			"department_id": row.DepartmentID, "department_name": row.DepartmentName,
+			"semester_id": row.SemesterID, "semester": row.Semester, "rank": row.Rank,
+		}
+		for key, value := range item {
+			item[key] = db.NormalizeUUIDValue(value)
+		}
+		items = append(items, item)
 	}
 	return items, nil
 }
