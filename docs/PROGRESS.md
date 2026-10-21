@@ -38,10 +38,10 @@ checklist, not a claim that database-backed behavior has been exercised.
 | Item | Status | Notes |
 |---|---|---|
 | Academic sessions and semesters | Partial | Generic catalogue CRUD exists; full scope enforcement and API coverage remain. |
-| Courses, offerings, lecturer assignments and auto-registration targets | Partial | CRUD and assignment routes exist; `/me/offerings` now applies the authenticated resource visibility and pagination rules, while broader scope coverage and DB verification remain. |
-| Full-text/trigram offering search and required filters/defaults | Partial | Search query exists; PostgreSQL ranking and typo behavior are not live-tested. |
+| Courses, offerings, lecturer assignments and auto-registration targets | Partial | CRUD and assignment routes exist; `/me/offerings` and the student dashboard routes use caller-scoped registrations; broader scope coverage and DB verification remain. |
+| Full-text/trigram offering search and required filters/defaults | Partial | Search results include registration mode/state, course and department metadata, level, kind, and lecturers; PostgreSQL ranking and result query behavior are not live-tested. |
 | Registration modes and roster policy rules | Done | Pure rule logic and unit tests exist. |
-| Registration submit/list/review APIs | Partial | Routes and services exist; database behavior and comprehensive authorization tests remain. |
+| Registration submit/list/review APIs | Partial | Submit returns approved/pending decisions for auto/open/approval modes and a clear conflict for closed; `GET /me/registrations` lists only the caller's pending requests. Database behavior remains unverified. |
 | General-course visibility and department filtering | Partial | Some report/registration filters exist; catalogue read enforcement is incomplete. |
 | Academic/catalogue/registration unit tests | Partial | Service/rule coverage exists; HTTP and DB-backed behavior is incomplete. |
 
@@ -49,7 +49,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 
 | Item | Status | Notes |
 |---|---|---|
-| Venues, devices, timetable schema and CRUD APIs | Partial | Tenant-scoped, role-gated paginated `GET /venues` is implemented with total count and unit tests; venue/timetable management APIs remain absent and DB behavior is unverified. |
+| Venues, devices, timetable schema and CRUD APIs | Partial | Tenant-scoped, role-gated paginated `GET /venues` and student-scoped `GET /me/timetable` are implemented; venue/timetable management APIs remain absent and DB behavior is unverified. |
 | Session start/end and one-open-session-per-venue constraint | Partial | Session service/schema logic exists; PostgreSQL migration/constraint has not been exercised. |
 | Static and rotating codes, code retrieval | Partial | Pure code logic and routes exist; behavior is covered by unit tests. |
 | Web check-in, roster policy, geofence and duplicate handling | Partial | Service and unit tests exist; race-safe SQL and live DB behavior are unverified. |
@@ -73,7 +73,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 | Roster sheet JSON/CSV and scope | Partial | API and tests exist; end-to-end verification remains. |
 | Audited single and bulk overrides | Partial | Bulk override service/API and transactional store exist; live transaction testing remains. |
 | Offering/department aggregate attendance reports | Not started | |
-| Attendance percentages and below-threshold list | Partial | Pure percentage math exists; aggregate report endpoints and queries are absent. |
+| Attendance percentages and below-threshold list | Partial | Student `GET /me/courses` uses the pure percentage math, counts late according to offering policy, and applies override status first; department aggregate endpoints remain absent and database behavior is unverified. |
 | CSV exports | Partial | Session report/roster export exists; aggregate exports remain. |
 | Audit logging for all role/attendance changes | Partial | Session and override audit paths exist; role-change coverage and verification are incomplete. |
 | Disputes | Not started | |
@@ -87,7 +87,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 | JSON request limits, strict decoding and error envelope | Partial | Shared helpers exist; every handler must be checked for consistent use. |
 | CORS allowlist, request IDs and structured logs | Partial | Infrastructure exists; complete hardening verification remains. |
 | Optional phone/device binding | Not started | |
-| OpenAPI coverage and accurate schemas for all implemented endpoints | Partial | Added student-only `GET /me/live-classes`, scoped `GET /me/offerings`, and paginated `GET /venues`; many product routes remain uncovered. |
+| OpenAPI coverage and accurate schemas for all implemented endpoints | Partial | Added student-only `/me/courses`, `/me/timetable`, `/me/attendance`, and `/me/registrations`, plus detailed offering search results; many product routes remain uncovered. |
 | Demo seed loader and reproducible checklist | Partial | Seed now builds a date-relative dataset with two faculties, four departments/programmes, ten courses and eleven offerings across all registration modes, four lecturers/staff records, 40 students (claimed and claimable), registration targets, weekly timetable, open and historical sessions, attendance evidence, pending invitation/signup request, and a registered scanner. Login credentials and unclaimed matric/email pairs print in tables; `--reset` removes and recreates only the demo institution. Fixture logic is unit-tested; the expanded seed itself has not yet been run against PostgreSQL. |
 | Manual guide, testing gaps, architecture and decisions docs | Partial | Docs exist and are being updated with implemented workflows; full product checklist remains incomplete. |
 | README setup, deployment, frontend contract and Windows instructions | Partial | Setup, seed and frontend contract instructions exist; deployment guidance and full contract coverage remain. |

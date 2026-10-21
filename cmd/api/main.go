@@ -38,6 +38,9 @@ import (
 	"attendance-api/internal/sessions"
 	sessionhttp "attendance-api/internal/sessions/httpapi"
 	sessionpostgres "attendance-api/internal/sessions/postgres"
+	"attendance-api/internal/studentportal"
+	studentportalhttp "attendance-api/internal/studentportal/httpapi"
+	studentportalpostgres "attendance-api/internal/studentportal/postgres"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -201,6 +204,22 @@ func main() {
 		logger.Error("configure registration handler", "error", err)
 		os.Exit(1)
 	}
+	studentPortalStore, err := studentportalpostgres.NewStore(pool, queries,
+		time.Duration(cfg.DeviceOfflineSeconds)*time.Second)
+	if err != nil {
+		logger.Error("configure student portal store", "error", err)
+		os.Exit(1)
+	}
+	studentPortalService, err := studentportal.NewService(studentPortalStore, systemClock)
+	if err != nil {
+		logger.Error("configure student portal service", "error", err)
+		os.Exit(1)
+	}
+	studentPortalHandler, err := studentportalhttp.NewHandler(studentPortalService)
+	if err != nil {
+		logger.Error("configure student portal handler", "error", err)
+		os.Exit(1)
+	}
 	importStore, err := importspostgres.NewStore(pool)
 	if err != nil {
 		logger.Error("configure student import store", "error", err)
@@ -227,6 +246,7 @@ func main() {
 			invitationHandler.RegisterAuthenticatedRoutes(userRouter)
 			catalogueHandler.RegisterRoutes(userRouter)
 			registrationHandler.RegisterRoutes(userRouter)
+			studentPortalHandler.RegisterRoutes(userRouter)
 			importHandler.RegisterRoutes(userRouter)
 			reportHandler.RegisterRoutes(userRouter)
 		})

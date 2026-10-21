@@ -148,6 +148,193 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
+  /me/courses:
+    get:
+      operationId: getMyCourses
+      summary: List the authenticated student's approved courses in the current semester
+      description: Returns only the caller's approved registrations. Attendance percentages count late as attended only when the offering allows it; attendance overrides take precedence over check-in evidence.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current-semester courses with attendance summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [offering_id, course_code, course_title, lecturer_names, sessions_held, sessions_attended, attendance_percentage, minimum_attendance_percentage, below_threshold]
+                      properties:
+                        offering_id: {type: string, format: uuid}
+                        course_code: {type: string}
+                        course_title: {type: string}
+                        lecturer_names: {type: array, items: {type: string}}
+                        sessions_held: {type: integer, minimum: 0}
+                        sessions_attended: {type: integer, minimum: 0}
+                        attendance_percentage: {type: number, minimum: 0, maximum: 100}
+                        minimum_attendance_percentage: {type: number, minimum: 0, maximum: 100}
+                        below_threshold: {type: boolean}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Authenticated user is not a claimed student.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /me/timetable:
+    get:
+      operationId: getMyTimetable
+      summary: List the authenticated student's approved offering timetable for a date
+      description: The date defaults to today in Africa/Lagos. Entries are limited to the caller's approved offerings.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          description: Local calendar date in Africa/Lagos; defaults to today.
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Timetable entries for the requested local date.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [date, items]
+                properties:
+                  date: {type: string, format: date}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [offering_id, course_code, course_title, venue_id, venue_name, starts_at, ends_at, live_now]
+                      properties:
+                        offering_id: {type: string, format: uuid}
+                        course_code: {type: string}
+                        course_title: {type: string}
+                        venue_id: {type: string, format: uuid}
+                        venue_name: {type: string}
+                        starts_at: {type: string, format: time}
+                        ends_at: {type: string, format: time}
+                        live_now: {type: boolean}
+        "400":
+          description: The date is not a valid YYYY-MM-DD date.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Authenticated user is not a claimed student.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /me/attendance:
+    get:
+      operationId: getMyAttendance
+      summary: List the authenticated student's attendance history for an approved offering
+      description: The requested offering must be approved for the caller. Override status takes precedence over web or scanner evidence; override reason is returned as text.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: offering_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Per-session attendance history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [session_id, date, status, classification]
+                      properties:
+                        session_id: {type: string, format: uuid}
+                        date: {type: string, format: date}
+                        status: {type: string, enum: [present, late, absent, excused]}
+                        classification: {type: string, enum: [verified, suspected_proxy, present_no_web_log, web_only_unverified, absent, excused]}
+                        override_reason: {type: [string, "null"]}
+        "400":
+          description: offering_id is missing or is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Authenticated user is not a claimed student.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Offering is not approved for the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /me/registrations:
+    get:
+      operationId: getMyPendingRegistrations
+      summary: List the authenticated student's pending registration requests
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Pending registrations belonging only to the authenticated student.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [offering_id, course_code, course_title, status, created_at]
+                      properties:
+                        offering_id: {type: string, format: uuid}
+                        course_code: {type: string}
+                        course_title: {type: string}
+                        status: {type: string, enum: [pending]}
+                        created_at: {type: string, format: date-time}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Authenticated user is not a claimed student.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /me/live-classes:
     get:
       operationId: getMyLiveClasses
@@ -1395,11 +1582,11 @@ paths:
             default: 0
       responses:
         "200":
-          description: Ranked and paginated matching offerings.
+          description: Ranked and paginated matching offerings. Each item includes course code/title, department, level, kind, registration mode, lecturer names, and registration status (none, pending, approved, or rejected).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PagedCatalogueItems"
+                $ref: "#/components/schemas/PagedSearchOfferings"
         "400":
           description: Missing or invalid search query or filters.
           content:
@@ -2205,6 +2392,40 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CatalogueItem"
+        limit:
+          type: integer
+        offset:
+          type: integer
+        has_more:
+          type: boolean
+    PagedSearchOfferings:
+      type: object
+      required: [items, limit, offset, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [offering_id, course_id, course_code, course_title, department_id, department_name, level, kind, registration_mode, lecturers, registration_status, is_registered, is_pending]
+            properties:
+              offering_id: {type: string, format: uuid}
+              course_id: {type: string, format: uuid}
+              course_code: {type: string}
+              course_title: {type: string}
+              code: {type: string}
+              title: {type: string}
+              department_id: {type: string, format: uuid}
+              department_name: {type: string}
+              level: {type: integer}
+              kind: {type: string, enum: [departmental, general]}
+              registration_mode: {type: string, enum: [auto, open, approval, closed]}
+              lecturers: {type: array, items: {type: string}}
+              registration_status: {type: string, enum: [none, pending, approved, rejected]}
+              is_registered: {type: boolean}
+              is_pending: {type: boolean}
+              semester_id: {type: string, format: uuid}
+              semester: {type: string}
+              rank: {type: number}
         limit:
           type: integer
         offset:

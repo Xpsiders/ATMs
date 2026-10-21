@@ -30,7 +30,7 @@ type Registration struct {
 	Status       string     `json:"status"`
 	CreatedAt    time.Time  `json:"created_at"`
 	ApprovedAt   *time.Time `json:"approved_at,omitempty"`
-	OnRoster     bool       `json:"on_roster,omitempty"`
+	OnRoster     bool       `json:"on_roster"`
 }
 
 type Listing struct {

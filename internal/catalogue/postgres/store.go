@@ -35,6 +35,13 @@ type resourceConfig struct {
 	columns []string
 }
 
+type offeringSearchMetadata struct {
+	mode      string
+	level     int32
+	lecturers []string
+	status    string
+}
+
 var resources = map[catalogue.Resource]resourceConfig{
 	catalogue.Institutions:     {"institutions", []string{"id", "name", "created_at"}},
 	catalogue.Faculties:        {"faculties", []string{"id", "name", "created_at"}},
@@ -240,19 +247,76 @@ func (s *Store) searchOfferings(ctx context.Context, tenant, user, student pgtyp
 		return nil, fmt.Errorf("search offerings: %w", err)
 	}
 	items := make([]map[string]any, 0, len(rows))
+	if len(rows) == 0 {
+		return items, nil
+	}
+	offeringIDs := make([]pgtype.UUID, 0, len(rows))
 	for _, row := range rows {
-		item := map[string]any{
-			"offering_id": row.OfferingID, "course_id": row.CourseID,
-			"code": row.Code, "title": row.Title, "kind": row.Kind,
-			"department_id": row.DepartmentID, "department_name": row.DepartmentName,
-			"semester_id": row.SemesterID, "semester": row.Semester, "rank": row.Rank,
+		offeringIDs = append(offeringIDs, row.OfferingID)
+	}
+	metadataRows, err := s.pool.Query(ctx, `
+SELECT offering.id::text, offering.registration_mode, offering.level,
+       coalesce(array_agg(DISTINCT lecturer.display_name ORDER BY lecturer.display_name)
+         FILTER (WHERE lecturer.id IS NOT NULL), ARRAY[]::text[]),
+       coalesce(registration.status, 'none')
+FROM course_offerings AS offering
+LEFT JOIN offering_lecturers AS assignment
+  ON assignment.institution_id=offering.institution_id
+ AND assignment.offering_id=offering.id
+LEFT JOIN users AS lecturer
+  ON lecturer.institution_id=assignment.institution_id
+ AND lecturer.id=assignment.lecturer_user_id
+LEFT JOIN course_registrations AS registration
+  ON registration.institution_id=offering.institution_id
+ AND registration.offering_id=offering.id
+ AND registration.student_record_id=$3
+WHERE offering.institution_id=$1
+  AND offering.id=ANY($2::uuid[])
+GROUP BY offering.id, registration.status`,
+		tenant, offeringIDs, student)
+	if err != nil {
+		return nil, fmt.Errorf("load offering search metadata: %w", err)
+	}
+	metadata := make(map[string]offeringSearchMetadata, len(rows))
+	for metadataRows.Next() {
+		var id string
+		var item offeringSearchMetadata
+		if err := metadataRows.Scan(&id, &item.mode, &item.level, &item.lecturers, &item.status); err != nil {
+			metadataRows.Close()
+			return nil, fmt.Errorf("scan offering search metadata: %w", err)
 		}
-		for key, value := range item {
-			item[key] = db.NormalizeUUIDValue(value)
+		metadata[id] = item
+	}
+	if err := metadataRows.Err(); err != nil {
+		metadataRows.Close()
+		return nil, fmt.Errorf("iterate offering search metadata: %w", err)
+	}
+	metadataRows.Close()
+	for _, row := range rows {
+		id := db.NormalizeUUIDValue(row.OfferingID)
+		detail, ok := metadata[fmt.Sprint(id)]
+		if !ok {
+			return nil, fmt.Errorf("search metadata missing for offering %v", id)
 		}
-		items = append(items, item)
+		items = append(items, mapSearchOffering(row, detail))
 	}
 	return items, nil
+}
+
+func mapSearchOffering(row dbgen.SearchOfferingsFullTextRow, detail offeringSearchMetadata) map[string]any {
+	item := map[string]any{
+		"offering_id": row.OfferingID, "course_id": row.CourseID,
+		"code": row.Code, "title": row.Title, "course_code": row.Code, "course_title": row.Title,
+		"kind": row.Kind, "department_id": row.DepartmentID, "department_name": row.DepartmentName,
+		"semester_id": row.SemesterID, "semester": row.Semester, "rank": row.Rank,
+		"registration_mode": detail.mode, "level": detail.level, "lecturers": detail.lecturers,
+		"registration_status": detail.status, "is_registered": detail.status == "approved",
+		"is_pending": detail.status == "pending",
+	}
+	for key, value := range item {
+		item[key] = db.NormalizeUUIDValue(value)
+	}
+	return item
 }
 
 func pagination(filters map[string]string) (int, int, error) {
