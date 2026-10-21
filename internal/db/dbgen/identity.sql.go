@@ -11,6 +11,62 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const autoRegisterClaimedStudent = `-- name: AutoRegisterClaimedStudent :execrows
+WITH claimed_student AS (
+    SELECT institution_id, id, department_id, level
+    FROM student_records
+    WHERE institution_id = $1
+      AND id = $2
+)
+INSERT INTO course_registrations (
+    institution_id, offering_id, student_record_id, status, approved_at
+)
+SELECT student.institution_id, offering.id, student.id, 'approved', $3
+FROM claimed_student AS student
+JOIN course_offerings AS offering
+  ON offering.institution_id = student.institution_id
+ AND offering.level = student.level
+ AND offering.registration_mode = 'auto'
+JOIN courses AS course
+  ON course.institution_id = offering.institution_id
+ AND course.id = offering.course_id
+WHERE (
+      (course.kind = 'departmental' AND course.department_id = student.department_id)
+      OR (
+          course.kind = 'general'
+          AND EXISTS (
+              SELECT 1
+              FROM offering_auto_targets AS target
+              WHERE target.institution_id = offering.institution_id
+                AND target.offering_id = offering.id
+                AND target.department_id = student.department_id
+                AND target.level = student.level
+          )
+      )
+  )
+ON CONFLICT (institution_id, offering_id, student_record_id) DO UPDATE
+SET status = 'approved', approved_at = EXCLUDED.approved_at
+WHERE course_registrations.status <> 'approved'
+`
+
+type AutoRegisterClaimedStudentParams struct {
+	InstitutionID   pgtype.UUID        `json:"institution_id"`
+	StudentRecordID pgtype.UUID        `json:"student_record_id"`
+	ApprovedAt      pgtype.Timestamptz `json:"approved_at"`
+}
+
+func (q *Queries) AutoRegisterClaimedStudent(ctx context.Context, arg AutoRegisterClaimedStudentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, autoRegisterClaimedStudent,
+		arg.InstitutionID,
+		arg.StudentRecordID,
+		arg.ApprovedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const canInviteTarget = `-- name: CanInviteTarget :many
 WITH target_department AS (
     SELECT department.id, department.faculty_id

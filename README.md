@@ -36,10 +36,14 @@ The compose file provides an API and PostgreSQL service. Apply migrations with
 load the demo data and print credentials and the initial scanner key. The
 plaintext device key is shown only when the seed command creates the device;
 rerunning seed does not recover or rotate an existing key.
-The demo dataset includes development-only accounts for platform admin,
-institution admin, faculty admin, department admins for both departments,
-lecturers, and a claimed student. The seed output lists each account's email
-and password; use the institution UUID printed there for login.
+The demo dataset includes two faculties, four departments and programmes,
+ten courses with all registration modes, four lecturers with staff records,
+40 student records spanning four levels, claimed and unclaimed student
+accounts, sample attendance history, and a live session. The seed output lists
+all demo login emails/passwords and the unclaimed matric/email pairs. Use the
+institution UUID printed there for login. Run `go run ./scripts/seed --reset` to delete and recreate the demo institution.
+This deletes every record in that tenant, including manually added test data,
+and creates a new scanner key.
 
 ## Commands
 

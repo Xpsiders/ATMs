@@ -25,10 +25,17 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    ```
 
    In PowerShell without GNU Make, use `go run ./scripts/seed`. The command
-   prints demo account credentials, the institution and sample resource IDs,
+   prints a login table for every role, all unclaimed matric/email pairs,
    and prints the scanner's plaintext device key only when it creates that
    device for the first time. Save that key securely; a repeat seed does not
-   reveal or rotate an existing key.
+   reveal or rotate an existing key. To delete and recreate the demo institution,
+   run `go run ./scripts/seed --reset` (or `make seed SEED_ARGS=--reset`).
+   Reset deletes every record in that institution, including any test data you
+   added there, and generates a new scanner key.
+
+   The seed creates a current academic session and semester from today's date,
+   schedules a class later today, leaves one demo session open, and includes
+   past web/scanner/override records for report testing.
 
    Start the API in a second CMD window with configured secrets:
 
@@ -63,7 +70,8 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    For example, institution admin is `admin@attendance.test` /
    `DemoAdmin-2026!`. The seed command prints credentials for platform admin,
    institution admin, faculty admin, each department admin, lecturers, and a
-   claimed student. Use each account to verify its role-scoped frontend views.
+   set of claimed students. Use each account to verify its role-scoped frontend
+   views.
    All demo accounts use the printed institution ID when logging in.
    Expect a JSON `access_token`, `expires_in: 900`, `force_password_change`,
    `must_change_password`, `id`, `name`, `email`, `status`, and a `roles` array.
@@ -123,8 +131,9 @@ double quotes in `--data` JSON with single-quoted JSON strings.
 
    The first call returns `202 request_received`. The second returns `201`, an
    access token, and the refresh cookie. The student department and level come
-   from the student record, not request fields. Admin review routes for unknown
-   matric requests are not yet available.
+   from the student record, not request fields. Eligible auto-mode offerings
+   are registered in the same transaction as the account claim. Admin review
+   routes for unknown matric requests are not yet available.
 
 5. **Invite a staff member.** As an institution admin, faculty admin, or
    department admin, invite a user only into a role/scope that you manage.

@@ -11,8 +11,9 @@ that every phase or database-backed behavior is complete. See
 - This directory is a Git repository on `master`; commits are available.
 - `docs/HANDOFF.md` was absent when the handoff instructions were first checked;
   this file now records the current state.
-- Docker Desktop is paused. PostgreSQL migrations, seed execution, and
-  database-backed behavior have not been verified against a live database.
+- The owner reports that Goose migrations have been applied successfully to
+  PostgreSQL and produced 35 tables. This task did not start Docker,
+  PostgreSQL, or the API; the expanded seed has not yet been executed.
 - `make` is not installed. The OpenAPI linter was run directly with
   `npx.cmd`; it validated `api/openapi.yaml` with four recommended-rule
   warnings (license field, localhost server URL, and missing 4xx responses on
@@ -25,9 +26,15 @@ that every phase or database-backed behavior is complete. See
 
 - Catalogue/offering resource-scope filtering and destination checks, with
   related RBAC tests and documentation.
-- A transactional, repeatable `scripts/seed` demo data loader, with unit tests.
-  It prints credentials and reveals the device key only when it first creates
-  the device. Live PostgreSQL execution remains outstanding.
+- A transactional, repeatable `scripts/seed` demo data loader with a
+  tenant-specific `--reset` option. It includes two faculties, four
+  departments/programmes, ten courses and eleven offerings across all
+  registration modes, four lecturer accounts/staff records, 40 students,
+  registrations and auto targets, current-week timetables, an open session,
+  historical web/scanner/override attendance, pending invitation/signup
+  request, and a registered scanner. It prints all role logins and unclaimed
+  matric/email pairs; the scanner key is shown only on initial creation.
+  Fixture tests pass; execution against PostgreSQL remains outstanding.
 - Student CSV preview and commit:
   - `POST /imports/students/preview` parses and validates rows without writes.
   - `POST /imports/students` revalidates and commits all rows in one
@@ -78,11 +85,10 @@ that every phase or database-backed behavior is complete. See
   handler tests, and manual walkthrough were updated. Focused
   `go test ./internal/auth` passed. Persistent attempt caps and live PostgreSQL
   verification remain open.
-- Demo seed now defines accounts for all six supported role types, including
-  new faculty-admin and platform-admin fixtures. Role scopes are explicit and
-  the seed credential output includes the login passwords. Seed unit tests
-  require complete role coverage and valid scope assignments. The updated
-  seed has not been executed against PostgreSQL in this environment.
+- Student claims now insert approved registrations for matching auto-mode
+  offerings in the same PostgreSQL transaction as account and role creation.
+  The query is tenant-, department-, level-, mode-, and general-course-target
+  scoped and has unit coverage for its generated SQL contract.
 - Student `GET /me/live-classes` now requires a claimed student identity and
   lists only open sessions for that student's approved registrations. Its
   tenant/user-bound query includes venue and lecturer metadata, web and

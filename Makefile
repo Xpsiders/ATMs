@@ -28,7 +28,7 @@ migrate-down:
 	go run ./cmd/migrate down
 
 seed:
-	go run ./scripts/seed
+	go run ./scripts/seed $(SEED_ARGS)
 
 docker-up:
 	docker compose up --build

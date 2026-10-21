@@ -1,6 +1,6 @@
 # Implementation progress
 
-Status is based on repository inspection on 2026-10-20. **Done** means the
+Status is based on repository inspection on 2026-10-21. **Done** means the
 implementation and its required verification are present; **partial** means a
 slice exists but important requirements or verification remain; **not
 started** means no usable implementation is present. This is a delivery
@@ -14,9 +14,9 @@ checklist, not a claim that database-backed behavior has been exercised.
 | Environment configuration and PostgreSQL pool | Done | |
 | JSON/error helpers, request IDs, middleware, health/readiness | Done | Strict JSON/error helpers, request IDs, CORS, request logging, rate limits, health/readiness, and panic recovery are implemented with unit tests; database UUID values returned through catalogue maps are normalized to lowercase hyphenated strings; broader endpoint hardening is tracked in Phase 6. |
 | FakeClock and in-memory test helpers | Partial | Fake clock and selected stores/mailer helpers exist, not fakes for every service. |
-| Makefile targets | Partial | Build, test, migration, and seed targets exist; database-backed targets remain unverified. |
+| Makefile targets | Partial | Build, test, migration, and seed targets exist; the seed target supports `SEED_ARGS=--reset`; seed execution remains unverified in this session. |
 | Dockerfile and API/PostgreSQL Compose stack | Partial | Files exist; end-to-end stack verification is blocked while Docker Desktop is paused. |
-| Goose migration and sqlc wiring | Partial | Migrations and generated bindings exist; migration up/down has not been run against PostgreSQL. |
+| Goose migration and sqlc wiring | Done | Migrations have now been run successfully against PostgreSQL; the owner confirmed the resulting schema contains 35 tables. Generated bindings are checked in; down-migration behavior remains unverified. |
 | CI build, vet, lint, SQL generation check, OpenAPI validation, race tests | Partial | Workflow exists; local race testing is blocked by disabled CGO and no native compiler. |
 
 ## Phase 1 — Organization and identity
@@ -88,11 +88,11 @@ checklist, not a claim that database-backed behavior has been exercised.
 | CORS allowlist, request IDs and structured logs | Partial | Infrastructure exists; complete hardening verification remains. |
 | Optional phone/device binding | Not started | |
 | OpenAPI coverage and accurate schemas for all implemented endpoints | Partial | Added student-only `GET /me/live-classes`, scoped `GET /me/offerings`, and paginated `GET /venues`; many product routes remain uncovered. |
-| Demo seed loader and reproducible checklist | Partial | `make seed` includes development accounts for every role (platform, institution, faculty, department admins, lecturers, student) and prints credentials; unit-tested, database execution remains blocked pending PostgreSQL availability. |
+| Demo seed loader and reproducible checklist | Partial | Seed now builds a date-relative dataset with two faculties, four departments/programmes, ten courses and eleven offerings across all registration modes, four lecturers/staff records, 40 students (claimed and claimable), registration targets, weekly timetable, open and historical sessions, attendance evidence, pending invitation/signup request, and a registered scanner. Login credentials and unclaimed matric/email pairs print in tables; `--reset` removes and recreates only the demo institution. Fixture logic is unit-tested; the expanded seed itself has not yet been run against PostgreSQL. |
 | Manual guide, testing gaps, architecture and decisions docs | Partial | Docs exist and are being updated with implemented workflows; full product checklist remains incomplete. |
 | README setup, deployment, frontend contract and Windows instructions | Partial | Setup, seed and frontend contract instructions exist; deployment guidance and full contract coverage remain. |
 | Build/vet/format/lint/race/coverage gates | Partial | Build, vet, formatting, tests and targeted coverage pass; lint unavailable and race blocked by CGO. |
-| Migration up/down verification on empty PostgreSQL | Not started | Docker Desktop is paused; no live PostgreSQL verification was run. |
+| Migration up/down verification on empty PostgreSQL | Partial | The owner confirmed migrations ran successfully against PostgreSQL and created 35 tables. Down-migration behavior and a fresh empty-database replay have not been independently verified in this session. |
 
 ## Hardening addendum
 
@@ -122,7 +122,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 
 The active priority list is: (1) catalogue and offering scopes (implementation
 and unit checks complete; SQL runtime verification still needed); (2) seed
-loader (implemented, live DB run pending); (3) finish imports, verified claims,
+loader (expanded dataset implemented, PostgreSQL execution pending); (3) finish imports, verified claims,
 and invitations (student preview/commit and scoped staff invitations are
 implemented and unit-tested; staff import, signup-request review, and live DB
 verification remain); (4) device-key management; (5) aggregate reports and

@@ -96,6 +96,42 @@ WHERE institution_id = $1
 INSERT INTO signup_requests (institution_id, matric_no, email)
 VALUES ($1, $2, $3);
 
+-- name: AutoRegisterClaimedStudent :execrows
+WITH claimed_student AS (
+    SELECT institution_id, id, department_id, level
+    FROM student_records
+    WHERE institution_id = sqlc.arg(institution_id)
+      AND id = sqlc.arg(student_record_id)
+)
+INSERT INTO course_registrations (
+    institution_id, offering_id, student_record_id, status, approved_at
+)
+SELECT student.institution_id, offering.id, student.id, 'approved', sqlc.arg(approved_at)
+FROM claimed_student AS student
+JOIN course_offerings AS offering
+  ON offering.institution_id = student.institution_id
+ AND offering.level = student.level
+ AND offering.registration_mode = 'auto'
+JOIN courses AS course
+  ON course.institution_id = offering.institution_id
+ AND course.id = offering.course_id
+WHERE (
+      (course.kind = 'departmental' AND course.department_id = student.department_id)
+      OR (
+          course.kind = 'general'
+          AND EXISTS (
+              SELECT 1
+              FROM offering_auto_targets AS target
+              WHERE target.institution_id = offering.institution_id
+                AND target.offering_id = offering.id
+                AND target.department_id = student.department_id
+                AND target.level = student.level
+          )
+      )
+  )
+ON CONFLICT (institution_id, offering_id, student_record_id) DO UPDATE
+SET status = 'approved', approved_at = EXCLUDED.approved_at
+WHERE course_registrations.status <> 'approved';
 -- name: CreateEmailVerification :exec
 INSERT INTO email_verifications (institution_id, student_record_id, code_hash, expires_at)
 VALUES ($1, $2, $3, $4);

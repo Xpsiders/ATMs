@@ -353,6 +353,12 @@ func (s *PostgresStore) ClaimStudent(ctx context.Context, institutionIDText, stu
 	}); err != nil {
 		return ClaimedStudent{}, fmt.Errorf("assign student role: %w", err)
 	}
+	if _, err := queries.AutoRegisterClaimedStudent(ctx, dbgen.AutoRegisterClaimedStudentParams{
+		InstitutionID: institutionID, StudentRecordID: studentID,
+		ApprovedAt: pgtype.Timestamptz{Time: now.UTC(), Valid: true},
+	}); err != nil {
+		return ClaimedStudent{}, fmt.Errorf("auto-register claimed student: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return ClaimedStudent{}, fmt.Errorf("commit student claim: %w", err)
 	}
