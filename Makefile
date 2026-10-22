@@ -1,4 +1,4 @@
-.PHONY: build run test test-race lint fmt sqlc migrate-up migrate-down seed docker-up docker-down openapi-lint
+.PHONY: build run test test-race lint fmt sqlc migrate-up migrate-down seed set-venue docker-up docker-down openapi-lint
 
 build:
 	go build ./...
@@ -28,7 +28,10 @@ migrate-down:
 	go run ./cmd/migrate down
 
 seed:
-	go run ./scripts/seed $(SEED_ARGS)
+	go run ./scripts/seed $(ARGS)
+
+set-venue:
+	go run ./scripts/seed --update-venues
 
 docker-up:
 	docker compose up --build

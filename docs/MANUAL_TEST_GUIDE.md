@@ -24,18 +24,43 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    make seed
    ```
 
-   In PowerShell without GNU Make, use `go run ./scripts/seed`. The command
-   prints a login table for every role, all unclaimed matric/email pairs,
-   and prints the scanner's plaintext device key only when it creates that
-   device for the first time. Save that key securely; a repeat seed does not
-   reveal or rotate an existing key. To delete and recreate the demo institution,
-   run `go run ./scripts/seed --reset` (or `make seed SEED_ARGS=--reset`).
-   Reset deletes every record in that institution, including any test data you
-   added there, and generates a new scanner key.
+   In PowerShell without GNU Make, use `go run ./scripts/seed` (append
+   `--reset` to recreate only the demo institution). The command prints a
+   table of login credentials and all unclaimed matric/email pairs. Its
+   date-relative dataset includes two faculties, four departments/programmes,
+   ten courses and offerings across all four registration modes, 48 student
+   records, three lecturers or more, venues and timetable entries, open and
+   historical sessions, varied attendance evidence and overrides, plus
+   pending invitation, signup, and scanner-enrolment records. It prints
+   plaintext scanner keys and the pending invitation token only when each is
+   first created; save them securely, as a rerun does not reveal or rotate
+   existing secrets. Use `make seed ARGS=--reset` or
+   `go run ./scripts/seed --reset` only when you intend to delete and recreate
+   the demo institution.
 
-   The seed creates a current academic session and semester from today's date,
-   schedules a class later today, leaves one demo session open, and includes
-   past web/scanner/override records for report testing.
+   **Match venues to your test location.** In Google Maps, right-click your
+   physical position and copy the coordinates, with latitude first and
+   longitude second. Indoor browser location can be tens of metres off, so a
+   150–200 metre radius is a sensible starting point. Set the variables in
+   PowerShell, then update the seeded venues and open-session snapshots without
+   wiping data:
+
+   ```powershell
+   $env:DATABASE_URL = "postgres://attendance:attendance@localhost:5432/attendance?sslmode=disable"
+   $env:SEED_ORIGIN_LAT = "LATITUDE_FROM_GOOGLE_MAPS"
+   $env:SEED_ORIGIN_LNG = "LONGITUDE_FROM_GOOGLE_MAPS"
+   $env:SEED_VENUE_RADIUS_M = "150"
+   go run ./scripts/seed --update-venues
+   ```
+
+   Or place those values in the repository-root `.env` file and run
+   `docker compose run --rm seed seed --update-venues`. When GNU Make is
+   installed, `make set-venue` runs the host Go command. The seed prints the
+   origin and every venue coordinate. Three venues are at/within 25 metres of
+   the origin; **Far Test Venue (5 km)** is intentionally about 5 km away.
+   With neither origin variable set, the seed uses placeholder coordinates and
+   warns that check-ins from your actual location will fail with
+   `outside_radius`.
 
    Start the API in a second CMD window with configured secrets:
 
@@ -236,6 +261,13 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    session (`session_closed`), and repeating a successful check-in
    (`already_checked_in`, HTTP `409`).
 
+   **Test the geofence rejection.** Use the same currently open session and
+   valid code, but set `lat` and `lng` to the coordinates printed for **Far
+   Test Venue (5 km)**. Since that session uses a near-origin venue snapshot,
+   expect `400 outside_radius`. Use a fresh registered student or start another
+   session for a subsequent successful check-in because check-ins are unique
+   per student/session.
+
 9. **Scanner task polling.** Device keys are not yet provisioned by an API.
    For a test, use a device key whose SHA-256 hash has been inserted for a
    development device:
@@ -282,8 +314,11 @@ double quotes in `--data` JSON with single-quoted JSON strings.
 
 The authenticated catalogue routes include faculties, departments,
 programmes, academic sessions, semesters, courses, and offerings. Each
-collection accepts `limit` and `offset`; create/update bodies use the relevant
-resource fields. For example, to search and register:
+collection accepts `limit` and `offset`; `GET /courses` can additionally filter
+by `department_id` and `kind`. Lecturer offering creation assigns the lecturer
+automatically when the course belongs to their department. A cross-department
+course creates a pending teaching request for scoped administrator review.
+For example:
 
 ```cmd
 curl.exe -i "http://localhost:8080/offerings/search?q=ece301&limit=20&offset=0" -H "Authorization: Bearer ACCESS_TOKEN"
@@ -292,6 +327,27 @@ curl.exe -i -X POST http://localhost:8080/offerings/OFFERING_UUID/registrations 
 curl.exe -i "http://localhost:8080/offerings/OFFERING_UUID/registrations?status=pending&limit=50&offset=0" -H "Authorization: Bearer ADMIN_ACCESS_TOKEN"
 curl.exe -i -X PATCH http://localhost:8080/offerings/OFFERING_UUID/registrations/STUDENT_RECORD_UUID -H "Authorization: Bearer ADMIN_ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"status\":\"approved\"}"
 ```
+
+Additional lecturer/admin workflows can be exercised with:
+
+```cmd
+curl.exe -i "http://localhost:8080/courses?department_id=DEPARTMENT_UUID&kind=departmental&limit=50&offset=0" -H "Authorization: ******"
+curl.exe -i -X POST http://localhost:8080/offerings -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"course_id\":\"COURSE_UUID\",\"semester_id\":\"SEMESTER_UUID\",\"level\":200,\"registration_mode\":\"approval\",\"roster_policy\":\"registered_only\",\"min_attendance_pct\":75,\"auto_targets\":[],\"timetable\":[{\"weekday\":2,\"starts_at\":\"09:00\",\"ends_at\":\"10:00\",\"venue_id\":\"VENUE_UUID\"}]}"
+curl.exe -i "http://localhost:8080/teaching-requests?limit=50&offset=0" -H "Authorization: ******"
+curl.exe -i -X PATCH http://localhost:8080/teaching-requests/REQUEST_UUID -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"status\":\"approved\"}"
+curl.exe -i "http://localhost:8080/offerings/OFFERING_UUID/timetable" -H "Authorization: ******"
+curl.exe -i -X POST http://localhost:8080/offerings/OFFERING_UUID/timetable -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"weekday\":2,\"starts_at\":\"09:00\",\"ends_at\":\"10:00\",\"venue_id\":\"VENUE_UUID\"}"
+curl.exe -i -X PUT http://localhost:8080/offerings/OFFERING_UUID/timetable/SLOT_UUID -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"weekday\":2,\"starts_at\":\"09:00\",\"ends_at\":\"10:00\",\"venue_id\":\"VENUE_UUID\"}"
+curl.exe -i -X DELETE http://localhost:8080/offerings/OFFERING_UUID/timetable/SLOT_UUID -H "Authorization: ******"
+curl.exe -i "http://localhost:8080/registration-approvals?limit=50&offset=0" -H "Authorization: ******"
+curl.exe -i -X POST http://localhost:8080/offerings/OFFERING_UUID/registrations/bulk -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"student_ids\":[\"STUDENT_RECORD_UUID\"],\"status\":\"approved\"}"
+curl.exe -i "http://localhost:8080/sessions/SESSION_UUID/live?limit=50&offset=0" -H "Authorization: ******"
+```
+
+`GET /sessions/{id}/live` supports polling and includes scope-filtered counts
+plus roster status and evidence flags. `GET /me/offerings` includes
+`session_open` and the next timetable slot. These database-backed results have
+not yet been verified on a fresh stack.
 
 Search returns a paginated ranked list. Student search defaults to the
 student's home department and level. Registration mode controls whether the
@@ -357,6 +413,10 @@ offering staff/coordinators can see the full offering roster.
 - Send unknown JSON fields or malformed JSON; expect `400 invalid_json`.
 - Send a JSON body over 1 MiB; expect a `400` error envelope.
 - Repeatedly call login or device endpoints; expect `429 rate_limited`.
+- Ordinary authenticated reads such as `/me`, `/me/courses`, and
+  `/me/timetable` are not subject to a shared request quota. Repeatedly submit
+  `/auth/verify-email` attempts from one client IP; after five requests in one
+  minute, expect `429 rate_limited` on that verification endpoint only.
 - Check that an unassigned lecturer cannot start/end a session belonging to
   another offering.
 - Verify refresh-token rotation: reuse the old refresh cookie after a

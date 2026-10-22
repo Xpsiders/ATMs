@@ -33,22 +33,54 @@ feature-ready attendance service.
 
 The compose file provides an API and PostgreSQL service. Apply migrations with
 `go run ./cmd/migrate up` after PostgreSQL is healthy, then run `make seed` to
-load the demo data and print credentials and the initial scanner key. The
-plaintext device key is shown only when the seed command creates the device;
-rerunning seed does not recover or rotate an existing key.
-The demo dataset includes two faculties, four departments and programmes,
-ten courses with all registration modes, four lecturers with staff records,
-40 student records spanning four levels, claimed and unclaimed student
-accounts, sample attendance history, and a live session. The seed output lists
-all demo login emails/passwords and the unclaimed matric/email pairs. Use the
-institution UUID printed there for login. Run `go run ./scripts/seed --reset` to delete and recreate the demo institution.
-This deletes every record in that tenant, including manually added test data,
-and creates a new scanner key.
+load the date-relative demo dataset. It includes one institution, two
+faculties, four departments and programmes, ten courses and offerings across
+all registration modes, four lecturers, 48 student records (16 claimed
+accounts), three venues and scanners, weekly timetable entries, live and
+historical sessions, varied attendance evidence and overrides, and pending
+invitation, signup, and scanner-enrolment records. The seed prints a login
+table and the unclaimed matric/email pairs. Use the institution UUID printed
+there for login. Newly created scanner keys and the pending invitation token
+are displayed only once; reruns preserve them. To recreate only the demo
+institution and generate new keys, run `make seed ARGS=--reset`.
+
+### Set demo venues to your location
+
+In Google Maps, right-click your physical position and copy the coordinates;
+enter latitude first and longitude second. Indoor browser location can be off
+by tens of metres, so a venue radius of 150–200 metres is a sensible starting
+point for check-in testing. The seed places three venues at or within 25 metres
+of the configured origin and adds a fourth venue about 5 km away for testing
+`outside_radius`.
+
+Set `SEED_ORIGIN_LAT`, `SEED_ORIGIN_LNG`, and optionally
+`SEED_VENUE_RADIUS_M` in the repository-root `.env` file (the radius defaults
+to 150 metres), then update seeded venues and open-session location snapshots
+without resetting other data:
+
+```powershell
+$env:DATABASE_URL = "postgres://attendance:attendance@localhost:5432/attendance?sslmode=disable"
+$env:SEED_ORIGIN_LAT = "LATITUDE_FROM_GOOGLE_MAPS"
+$env:SEED_ORIGIN_LNG = "LONGITUDE_FROM_GOOGLE_MAPS"
+$env:SEED_VENUE_RADIUS_M = "150"
+go run ./scripts/seed --update-venues
+```
+
+With Compose, save the values in `.env` and run:
+
+```powershell
+docker compose run --rm seed seed --update-venues
+```
+
+For a host Go run, use `make set-venue` instead of the Go command when GNU Make
+is installed. The command prints the origin and every seeded venue's coordinates.
+If the origin variables are unset, the seed uses placeholder coordinates and
+warns that check-ins from your actual location will fail with `outside_radius`.
 
 ## Commands
 
 `make build`, `make run`, `make test`, `make test-race`, `make fmt`, `make lint`,
-`make sqlc`, `make migrate-up`, `make migrate-down`, `make seed`,
+`make sqlc`, `make migrate-up`, `make migrate-down`, `make seed`, `make set-venue`,
 `make docker-up`, `make docker-down`, and `make openapi-lint`.
 
 In Windows PowerShell, use the same `make` commands if GNU Make is installed;

@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -19,137 +21,206 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const institutionID = "10000000-0000-4000-8000-000000000001"
+
 const (
-	institutionID   = "10000000-0000-4000-8000-000000000001"
-	facultyID       = "10000000-0000-4000-8000-000000000002"
-	departmentAID   = "10000000-0000-4000-8000-000000000003"
-	departmentBID   = "10000000-0000-4000-8000-000000000004"
-	programmeAID    = "10000000-0000-4000-8000-000000000005"
-	programmeBID    = "10000000-0000-4000-8000-000000000006"
-	academicID      = "10000000-0000-4000-8000-000000000007"
-	semesterID      = "10000000-0000-4000-8000-000000000008"
-	courseID        = "10000000-0000-4000-8000-000000000009"
-	offering100ID   = "10000000-0000-4000-8000-000000000010"
-	offering200ID   = "10000000-0000-4000-8000-000000000011"
-	venueAID        = "10000000-0000-4000-8000-000000000012"
-	venueBID        = "10000000-0000-4000-8000-000000000013"
-	deviceID        = "10000000-0000-4000-8000-000000000014"
-	student100AID   = "10000000-0000-4000-8000-000000000015"
-	student200AID   = "10000000-0000-4000-8000-000000000016"
-	student100BID   = "10000000-0000-4000-8000-000000000017"
-	student200BID   = "10000000-0000-4000-8000-000000000018"
-	adminID         = "10000000-0000-4000-8000-000000000019"
-	deptAdminAID    = "10000000-0000-4000-8000-000000000020"
-	deptAdminBID    = "10000000-0000-4000-8000-000000000021"
-	lecturerAID     = "10000000-0000-4000-8000-000000000022"
-	lecturerBID     = "10000000-0000-4000-8000-000000000023"
-	studentUserID   = "10000000-0000-4000-8000-000000000024"
-	facultyAdminID  = "10000000-0000-4000-8000-000000000025"
-	platformAdminID = "10000000-0000-4000-8000-000000000026"
-	timetable100ID  = "10000000-0000-4000-8000-000000000027"
-	timetable200ID  = "10000000-0000-4000-8000-000000000028"
+	defaultOriginLatitude  = 6.5244
+	defaultOriginLongitude = 3.3792
+	defaultVenueRadius     = 150
 )
 
-type demoFaculty struct {
+type seedConfig struct {
+	originLatitude   float64
+	originLongitude  float64
+	venueRadius      int
+	originConfigured bool
+}
+
+type seedPlan struct {
+	now              time.Time
+	config           seedConfig
+	academicStart    time.Time
+	academicEnd      time.Time
+	semesterStart    time.Time
+	semesterEnd      time.Time
+	faculties        []seedFaculty
+	departments      []seedDepartment
+	programmes       []seedProgramme
+	users            []seedUser
+	students         []seedStudent
+	courses          []seedCourse
+	offerings        []seedOffering
+	venues           []seedVenue
+	timetables       []seedTimetable
+	sessions         []seedSession
+	registrations    []seedRegistration
+	webCheckins      []seedWebCheckin
+	fingerprintScans []seedFingerprint
+	overrides        []seedOverride
+	heartbeats       []seedHeartbeat
+}
+
+type seedFaculty struct {
 	id   string
 	name string
 }
 
-type demoDepartment struct {
-	id, facultyID, programmeID, name, code string
+type seedDepartment struct {
+	id        string
+	facultyID string
+	name      string
+	code      string
 }
 
-type demoCourse struct {
-	id, departmentID, code, title, kind, description, offeringID, lecturerID, venueID string
-	level                                                                             int
-	mode                                                                              string
+type seedProgramme struct {
+	id           string
+	departmentID string
+	name         string
+	code         string
 }
 
-type demoVenue struct {
-	id, name            string
-	latitude, longitude float64
-	radius              int
+type seedUser struct {
+	id        string
+	label     string
+	email     string
+	password  string
+	role      string
+	scopeType string
+	facultyID string
+	deptID    string
+	staffNo   string
 }
 
-type demoStudent struct {
-	id, departmentID, programmeID, matric, email, name, userID, password string
-	level                                                                int
-	claimed                                                              bool
+type seedStudent struct {
+	id           string
+	matric       string
+	email        string
+	name         string
+	departmentID string
+	programmeID  string
+	level        int
+	userID       string
 }
 
-type demoCredential struct {
-	label, userID, email, password, role, scopeType, facultyID, departmentID string
+type seedCourse struct {
+	id           string
+	departmentID string
+	code         string
+	title        string
+	kind         string
+	description  string
 }
 
-type teachingAssignment struct {
-	timetableID, offeringID, venueID string
-	weekday                          int
-	startsAt, endsAt                 string
+type seedOffering struct {
+	id             string
+	courseID       string
+	level          int
+	mode           string
+	lecturerID     string
+	minimumPercent float64
+	lateCounts     bool
+	autoTargets    []string
 }
 
-type attendanceFixture struct {
-	student        demoStudent
-	webStatus      string
-	scan           bool
-	overrideStatus string
-	overrideReason string
+type seedVenue struct {
+	id     string
+	name   string
+	lat    float64
+	lng    float64
+	radius int
+	device string
 }
 
-var (
-	facultyBID      = demoUUID(100)
-	departmentCID   = demoUUID(101)
-	departmentDID   = demoUUID(102)
-	programmeCID    = demoUUID(103)
-	programmeDID    = demoUUID(104)
-	venueCID        = demoUUID(105)
-	lecturerCID     = demoUUID(106)
-	lecturerDID     = demoUUID(107)
-	facultyAdminBID = demoUUID(108)
-	deptAdminCID    = demoUUID(109)
-	deptAdminDID    = demoUUID(110)
+type seedTimetable struct {
+	id         string
+	offeringID string
+	venueID    string
+	weekday    int
+	startsAt   string
+	endsAt     string
+}
 
-	demoFaculties = []demoFaculty{
-		{id: facultyID, name: "Faculty of Engineering"},
-		{id: facultyBID, name: "Faculty of Computing and Business"},
-	}
-	demoDepartments = []demoDepartment{
-		{id: departmentAID, facultyID: facultyID, programmeID: programmeAID, name: "Electrical and Computer Engineering", code: "ECE"},
-		{id: departmentBID, facultyID: facultyID, programmeID: programmeBID, name: "Mechanical Engineering", code: "ME"},
-		{id: departmentCID, facultyID: facultyBID, programmeID: programmeCID, name: "Computer Science", code: "CSC"},
-		{id: departmentDID, facultyID: facultyBID, programmeID: programmeDID, name: "Business Administration", code: "BUS"},
-	}
-	demoVenues = []demoVenue{
-		{id: venueAID, name: "Engineering Hall", latitude: 6.5244, longitude: 3.3792, radius: 150},
-		{id: venueBID, name: "Workshop Building", latitude: 6.5251, longitude: 3.3810, radius: 120},
-		{id: venueCID, name: "Computing Centre", latitude: 6.5262, longitude: 3.3775, radius: 100},
-	}
-	demoCourses = []demoCourse{
-		{id: courseID, departmentID: departmentAID, code: "ECE301", title: "Circuits and Systems", kind: "general", description: "Cross-department circuit analysis", offeringID: offering100ID, lecturerID: lecturerAID, venueID: venueAID, level: 100, mode: "auto"},
-		{id: courseID, departmentID: departmentAID, code: "ECE301", title: "Circuits and Systems", kind: "general", description: "Cross-department circuit analysis", offeringID: offering200ID, lecturerID: lecturerBID, venueID: venueBID, level: 200, mode: "auto"},
-		{id: demoUUID(200), departmentID: departmentCID, code: "CSC101", title: "Programming Fundamentals", kind: "departmental", description: "Core programming concepts", offeringID: demoUUID(300), lecturerID: lecturerCID, venueID: venueCID, level: 100, mode: "auto"},
-		{id: demoUUID(201), departmentID: departmentBID, code: "MEC120", title: "Engineering Statics", kind: "departmental", description: "Core statics and mechanics", offeringID: demoUUID(301), lecturerID: lecturerBID, venueID: venueBID, level: 100, mode: "open"},
-		{id: demoUUID(202), departmentID: departmentDID, code: "BUS110", title: "Business Foundations", kind: "departmental", description: "Core business principles", offeringID: demoUUID(302), lecturerID: lecturerDID, venueID: venueCID, level: 100, mode: "approval"},
-		{id: demoUUID(203), departmentID: departmentAID, code: "ECE210", title: "Digital Logic", kind: "departmental", description: "Core digital systems", offeringID: demoUUID(303), lecturerID: lecturerAID, venueID: venueAID, level: 200, mode: "closed"},
-		{id: demoUUID(204), departmentID: departmentCID, code: "CSC220", title: "Data Structures", kind: "departmental", description: "Elective algorithms and data structures", offeringID: demoUUID(304), lecturerID: lecturerCID, venueID: venueCID, level: 200, mode: "open"},
-		{id: demoUUID(205), departmentID: departmentBID, code: "MEC230", title: "Thermodynamics", kind: "departmental", description: "Core thermodynamic systems", offeringID: demoUUID(305), lecturerID: lecturerBID, venueID: venueBID, level: 200, mode: "approval"},
-		{id: demoUUID(206), departmentID: departmentDID, code: "BUS230", title: "Principles of Marketing", kind: "departmental", description: "Elective marketing practice", offeringID: demoUUID(306), lecturerID: lecturerDID, venueID: venueCID, level: 200, mode: "auto"},
-		{id: demoUUID(207), departmentID: departmentAID, code: "ECE310", title: "Embedded Systems", kind: "departmental", description: "Elective embedded systems", offeringID: demoUUID(307), lecturerID: lecturerAID, venueID: venueAID, level: 300, mode: "approval"},
-		{id: demoUUID(208), departmentID: departmentCID, code: "CSC330", title: "Computer Networks", kind: "departmental", description: "Core network systems", offeringID: demoUUID(308), lecturerID: lecturerCID, venueID: venueCID, level: 300, mode: "closed"},
-	}
-)
+type seedSession struct {
+	id         string
+	offeringID string
+	venueID    string
+	timetable  string
+	lecturerID string
+	startedAt  time.Time
+	endedAt    *time.Time
+	latitude   float64
+	longitude  float64
+	radius     int
+	lateAfter  int
+}
+
+type seedRegistration struct {
+	offeringID string
+	studentID  string
+	status     string
+}
+
+type seedWebCheckin struct {
+	sessionID string
+	studentID string
+	status    string
+	at        time.Time
+	onRoster  bool
+}
+
+type seedFingerprint struct {
+	sessionID string
+	studentID string
+	deviceID  string
+	at        time.Time
+}
+
+type seedOverride struct {
+	sessionID string
+	studentID string
+	status    string
+	reason    string
+	code      string
+	note      string
+	actorID   string
+	at        time.Time
+}
+
+type seedHeartbeat struct {
+	deviceID string
+	at       time.Time
+}
+
+type seedDeviceSlot struct {
+	id        string
+	deviceID  string
+	studentID string
+	number    int
+}
 
 func main() {
-	reset := flag.Bool("reset", false, "delete and recreate the demo institution; removes every record in that tenant")
-	flag.Parse()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := run(ctx, *reset); err != nil {
+	if err := run(ctx, os.Args[1:]); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, reset bool) error {
-	if err := demoPlan().validate(); err != nil {
+func run(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("seed", flag.ContinueOnError)
+	reset := flags.Bool("reset", false, "delete and recreate only the demo institution")
+	updateVenues := flags.Bool("update-venues", false, "update seeded venue coordinates and open session snapshots without resetting data")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *reset && *updateVenues {
+		return errors.New("--reset and --update-venues cannot be used together")
+	}
+	if flags.NArg() != 0 {
+		return errors.New("seed accepts only the --reset and --update-venues flags")
+	}
+	config, err := loadSeedConfig(os.Getenv)
+	if err != nil {
 		return err
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -166,669 +237,1122 @@ func run(ctx context.Context, reset bool) error {
 	}
 
 	now := time.Now().UTC()
-	credentials := makeDemoCredentials()
-	hashes := make(map[string][]byte, len(credentials))
-	for _, credential := range credentials {
-		hash, err := bcrypt.GenerateFromPassword([]byte(credential.password), bcrypt.DefaultCost)
-		if err != nil {
-			return fmt.Errorf("hash demo password for %s: %w", credential.label, err)
-		}
-		hashes[credential.userID] = hash
-	}
-	deviceKey, deviceHash, err := scans.GenerateDeviceKey(nil)
+	plan, err := buildSeedPlanWithConfig(now, config)
 	if err != nil {
 		return err
 	}
-
+	if *updateVenues {
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			return fmt.Errorf("begin venue update transaction: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		if err := updateSeedVenues(ctx, tx, plan); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit venue update: %w", err)
+		}
+		printVenueConfiguration(plan)
+		return nil
+	}
+	passwordHashes := make(map[string][]byte, len(plan.users))
+	for _, user := range plan.users {
+		hash, err := bcrypt.GenerateFromPassword([]byte(user.password), bcrypt.DefaultCost)
+		if err != nil {
+			return fmt.Errorf("hash demo password for %s: %w", user.label, err)
+		}
+		passwordHashes[user.id] = hash
+	}
+	deviceKeys := make(map[string]string, len(plan.venues))
+	deviceHashes := make(map[string][]byte, len(plan.venues))
+	for _, venue := range plan.venues {
+		key, hash, err := scans.GenerateDeviceKey(nil)
+		if err != nil {
+			return fmt.Errorf("generate demo scanner key for %s: %w", venue.name, err)
+		}
+		deviceKeys[venue.device] = key
+		deviceHashes[venue.device] = hash
+	}
+	invitationToken, _, err := scans.GenerateDeviceKey(nil)
+	if err != nil {
+		return fmt.Errorf("generate pending invitation token: %w", err)
+	}
+	invitationHash := sha256.Sum256([]byte(invitationToken))
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin seed transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	if reset {
-		if _, err := tx.Exec(ctx, "DELETE FROM institutions WHERE id=$1", institutionID); err != nil {
-			return fmt.Errorf("reset demo institution: %w", err)
+	if *reset {
+		if err := resetDemoInstitution(ctx, tx); err != nil {
+			return err
 		}
 	}
-	deviceCreated, err := seedDemoData(ctx, tx, hashes, deviceHash, now)
+	createdDevices, invitationCreated, err := seedDemoData(ctx, tx, plan, passwordHashes, deviceHashes, invitationHash[:])
 	if err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit demo data: %w", err)
 	}
-
-	printCredentials(credentials)
-	printUnclaimedStudents()
-	if deviceCreated {
-		fmt.Printf("\nRegistered scanner key (shown only on initial creation): %s\n", deviceKey)
+	printCredentials(plan.users, plan.students)
+	if len(createdDevices) > 0 {
+		fmt.Println("\nRegistered scanner keys (shown only on initial creation):")
+		for _, venue := range plan.venues {
+			if createdDevices[venue.device] {
+				fmt.Printf("  %s: %s\n", venue.name, deviceKeys[venue.device])
+			}
+		}
 	} else {
-		fmt.Println("\nThe demo scanner already exists; its key was not rotated or displayed.")
+		fmt.Println("\nExisting demo scanner keys were preserved and are not displayed.")
 	}
-	if reset {
-		fmt.Println("Reset complete: only the seeded demo institution was deleted and recreated.")
+	if invitationCreated {
+		fmt.Printf("\nPending invitation token (shown only on initial creation): %s\n", invitationToken)
+	}
+	if !*reset {
+		fmt.Println("Use --reset to recreate only this demo institution and generate new scanner keys.")
+	}
+	printVenueConfiguration(plan)
+	return nil
+}
+
+func buildSeedPlan(now time.Time) (seedPlan, error) {
+	return buildSeedPlanWithConfig(now, seedConfig{
+		originLatitude: defaultOriginLatitude, originLongitude: defaultOriginLongitude,
+		venueRadius: defaultVenueRadius,
+	})
+}
+
+func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error) {
+	loc, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		return seedPlan{}, fmt.Errorf("load Africa/Lagos timezone: %w", err)
+	}
+	now = now.UTC()
+	localNow := now.In(loc)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
+	plan := seedPlan{
+		now:           now,
+		config:        config,
+		academicStart: today.AddDate(0, 0, -90),
+		academicEnd:   today.AddDate(0, 0, 275),
+		semesterStart: today.AddDate(0, 0, -30),
+		semesterEnd:   today.AddDate(0, 0, 150),
+		faculties: []seedFaculty{
+			{id: seedID(2), name: "Faculty of Engineering"},
+			{id: seedID(3), name: "Faculty of Science"},
+		},
+		departments: []seedDepartment{
+			{id: seedID(4), facultyID: seedID(2), name: "Electrical and Computer Engineering", code: "ECE"},
+			{id: seedID(5), facultyID: seedID(2), name: "Mechanical Engineering", code: "ME"},
+			{id: seedID(6), facultyID: seedID(3), name: "Computer Science", code: "CSC"},
+			{id: seedID(7), facultyID: seedID(3), name: "Mathematics", code: "MTH"},
+		},
+		programmes: []seedProgramme{
+			{id: seedID(8), departmentID: seedID(4), name: "Computer Engineering", code: "CPE"},
+			{id: seedID(9), departmentID: seedID(5), name: "Mechanical Engineering", code: "MEC"},
+			{id: seedID(10), departmentID: seedID(6), name: "Computer Science", code: "CSC"},
+			{id: seedID(11), departmentID: seedID(7), name: "Applied Mathematics", code: "AMT"},
+		},
+	}
+	credentialID := 20
+	addUser := func(label, email, role, scope, facultyID, departmentID, staffNo string) string {
+		id := seedID(credentialID)
+		credentialID++
+		plan.users = append(plan.users, seedUser{
+			id: id, label: label, email: email, password: "DemoPass-2026!", role: role,
+			scopeType: scope, facultyID: facultyID, deptID: departmentID, staffNo: staffNo,
+		})
+		return id
+	}
+	addUser("Platform administrator", "platform-admin@attendance.test", "platform_admin", "platform", "", "", "")
+	addUser("Institution administrator", "admin@attendance.test", "institution_admin", "institution", "", "", "")
+	addUser("Engineering faculty administrator", "engineering-admin@attendance.test", "faculty_admin", "faculty", seedID(2), "", "")
+	addUser("Science faculty administrator", "science-admin@attendance.test", "faculty_admin", "faculty", seedID(3), "", "")
+	lecturerIDs := make([]string, len(plan.departments))
+	for index, department := range plan.departments {
+		addUser(department.name+" administrator",
+			strings.ToLower(department.code)+"-admin@attendance.test",
+			"department_admin", "department", "", department.id, "")
+		lecturerIDs[index] = addUser(department.name+" lecturer",
+			strings.ToLower(department.code)+"-lecturer@attendance.test",
+			"lecturer", "department", "", department.id,
+			fmt.Sprintf("STAFF-%s-01", department.code))
+	}
+	studentNumber := 100
+	for departmentIndex, department := range plan.departments {
+		programmeID := plan.programmes[departmentIndex].id
+		for _, level := range []int{100, 200, 300, 400} {
+			for ordinal := 0; ordinal < 3; ordinal++ {
+				studentID := seedID(studentNumber)
+				studentNumber++
+				matric := fmt.Sprintf("%s-%d-%02d", department.code, level, ordinal+1)
+				email := strings.ToLower(fmt.Sprintf("%s-%d-%02d@student.attendance.test", department.code, level, ordinal+1))
+				userID := ""
+				if ordinal == 0 {
+					userID = addUser(
+						fmt.Sprintf("%s %d student %d", department.code, level, ordinal+1),
+						email, "student", "department", "", department.id, "")
+				}
+				plan.students = append(plan.students, seedStudent{
+					id: studentID, matric: matric, email: email,
+					name:         fmt.Sprintf("%s Student %d (%d)", department.code, ordinal+1, level),
+					departmentID: department.id, programmeID: programmeID, level: level, userID: userID,
+				})
+			}
+		}
+	}
+	courseSpecs := []seedCourse{
+		{id: seedID(200), departmentID: seedID(4), code: "ECE101", title: "Introduction to Electrical Engineering", kind: "departmental", description: "Core electrical engineering principles and circuit fundamentals"},
+		{id: seedID(201), departmentID: seedID(4), code: "ECE201", title: "Digital Logic Design", kind: "departmental", description: "Elective: digital systems, logic design, and computer architecture"},
+		{id: seedID(202), departmentID: seedID(4), code: "ECE301", title: "Signals and Systems", kind: "departmental", description: "Signals, systems, and transforms"},
+		{id: seedID(203), departmentID: seedID(4), code: "ECE401", title: "Embedded Systems", kind: "departmental", description: "Microcontrollers, embedded software, and connected devices"},
+		{id: seedID(204), departmentID: seedID(5), code: "MEE101", title: "Engineering Mechanics", kind: "departmental", description: "Statics, dynamics, and engineering mechanics"},
+		{id: seedID(205), departmentID: seedID(5), code: "MEE201", title: "Thermodynamics", kind: "departmental", description: "Energy, heat, and thermodynamic processes"},
+		{id: seedID(206), departmentID: seedID(6), code: "CSC101", title: "Programming Fundamentals", kind: "departmental", description: "Programming and computational thinking"},
+		{id: seedID(207), departmentID: seedID(6), code: "CSC301", title: "Database Systems", kind: "departmental", description: "Relational database design and implementation"},
+		{id: seedID(208), departmentID: seedID(4), code: "GST101", title: "Communication Skills", kind: "general", description: "Academic writing and communication for all faculties"},
+		{id: seedID(209), departmentID: seedID(7), code: "MTH201", title: "Applied Statistics", kind: "general", description: "Probability and applied statistical methods"},
+	}
+	plan.courses = courseSpecs
+	modes := []string{"auto", "approval", "open", "closed", "auto", "approval", "open", "auto", "open", "approval"}
+	levels := []int{100, 200, 300, 400, 100, 200, 100, 300, 100, 200}
+	departmentIndexes := []int{0, 0, 0, 0, 1, 1, 2, 2, 0, 3}
+	for index, course := range plan.courses {
+		lecturerID := lecturerIDs[departmentIndexes[index]]
+		offering := seedOffering{
+			id: seedID(300 + index), courseID: course.id, level: levels[index],
+			mode: modes[index], lecturerID: lecturerID, minimumPercent: 75, lateCounts: true,
+		}
+		if course.kind == "general" && offering.mode == "auto" {
+			offering.autoTargets = departmentIDs(plan.departments)
+		}
+		plan.offerings = append(plan.offerings, offering)
+	}
+	venues, err := placeSeedVenues(config)
+	if err != nil {
+		return seedPlan{}, err
+	}
+	plan.venues = venues
+	weekDay := int(localNow.Weekday())
+	currentStart := localNow.Add(-30 * time.Minute).Truncate(time.Minute)
+	if currentStart.Before(today) {
+		currentStart = today
+	}
+	currentEnd := localNow.Add(90 * time.Minute).Truncate(time.Minute)
+	if currentEnd.Day() != localNow.Day() {
+		currentEnd = time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 23, 59, 0, 0, loc)
+	}
+	laterStart := localNow.Add(2 * time.Hour).Truncate(time.Minute)
+	laterWeekday := weekDay
+	if laterStart.Day() != localNow.Day() {
+		laterStart = time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 23, 0, 0, 0, loc)
+	}
+	if !laterStart.After(localNow) {
+		laterStart = localNow.Add(time.Minute).Truncate(time.Minute)
+		if laterStart.Day() != localNow.Day() {
+			laterWeekday = (weekDay + 1) % 7
+		}
+	}
+	laterEnd := laterStart.Add(90 * time.Minute)
+	if laterStart.Day() == localNow.Day() && laterEnd.Day() != localNow.Day() {
+		laterEnd = time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 23, 59, 0, 0, loc)
+	}
+	currentSlot := func(offerIndex int, venueIndex int, start, end time.Time) seedTimetable {
+		return seedTimetable{
+			id: seedID(500 + offerIndex), offeringID: plan.offerings[offerIndex].id,
+			venueID: venues[venueIndex].id, weekday: weekDay,
+			startsAt: start.In(loc).Format("15:04:05"), endsAt: end.In(loc).Format("15:04:05"),
+		}
+	}
+	laterSlot := currentSlot(1, 2, laterStart, laterEnd)
+	laterSlot.weekday = laterWeekday
+	plan.timetables = append(plan.timetables,
+		currentSlot(0, 0, currentStart, currentEnd),
+		currentSlot(8, 1, currentStart, currentEnd),
+		laterSlot)
+	for index := 2; index < len(plan.offerings); index++ {
+		weekday := (weekDay + index + 1) % 7
+		startHour := 8 + (index%5)*2
+		plan.timetables = append(plan.timetables, seedTimetable{
+			id: seedID(500 + index), offeringID: plan.offerings[index].id,
+			venueID: venues[index%len(venues)].id, weekday: weekday,
+			startsAt: fmt.Sprintf("%02d:00:00", startHour),
+			endsAt:   fmt.Sprintf("%02d:30:00", startHour+1),
+		})
+	}
+	for index, item := range plan.timetables {
+		offer := offeringByID(plan.offerings, item.offeringID)
+		plan.timetables[index].id = seedID(500 + offeringIndex(plan.offerings, offer.id))
+	}
+	sessionID := 600
+	for _, past := range []struct {
+		daysAgo int
+		start   time.Duration
+	}{
+		{21, 8 * time.Hour}, {18, 8 * time.Hour}, {14, 8 * time.Hour},
+		{11, 8 * time.Hour}, {7, 8 * time.Hour}, {4, 8 * time.Hour},
+	} {
+		timetable := plan.timetables[0]
+		venue := venueByID(venues, timetable.venueID)
+		started := today.AddDate(0, 0, -past.daysAgo).Add(past.start).UTC()
+		ended := started.Add(75 * time.Minute)
+		plan.sessions = append(plan.sessions, seedSession{
+			id: seedID(sessionID), offeringID: timetable.offeringID, venueID: timetable.venueID,
+			timetable: timetable.id, lecturerID: plan.offerings[0].lecturerID,
+			startedAt: started, endedAt: &ended, latitude: venue.lat, longitude: venue.lng,
+			radius: venue.radius, lateAfter: 10,
+		})
+		sessionID++
+	}
+	for index := 0; index < 2; index++ {
+		timetable := plan.timetables[index]
+		venue := venueByID(venues, timetable.venueID)
+		started := currentStart.UTC()
+		plan.sessions = append(plan.sessions, seedSession{
+			id: seedID(sessionID), offeringID: timetable.offeringID, venueID: timetable.venueID,
+			timetable: timetable.id, lecturerID: plan.offerings[offeringIndex(plan.offerings, timetable.offeringID)].lecturerID,
+			startedAt: started, latitude: venue.lat, longitude: venue.lng,
+			radius: venue.radius, lateAfter: 10,
+		})
+		sessionID++
+	}
+
+	buildRegistrations(&plan)
+	buildAttendance(&plan)
+	if err := plan.validate(); err != nil {
+		return seedPlan{}, err
+	}
+	return plan, nil
+}
+
+func loadSeedConfig(getenv func(string) string) (seedConfig, error) {
+	latitudeText := strings.TrimSpace(getenv("SEED_ORIGIN_LAT"))
+	longitudeText := strings.TrimSpace(getenv("SEED_ORIGIN_LNG"))
+	radiusText := strings.TrimSpace(getenv("SEED_VENUE_RADIUS_M"))
+	config := seedConfig{
+		originLatitude: defaultOriginLatitude, originLongitude: defaultOriginLongitude,
+		venueRadius: defaultVenueRadius,
+	}
+	if (latitudeText == "") != (longitudeText == "") {
+		return seedConfig{}, errors.New("SEED_ORIGIN_LAT and SEED_ORIGIN_LNG must be set together")
+	}
+	if latitudeText != "" {
+		latitude, err := strconv.ParseFloat(latitudeText, 64)
+		if err != nil || math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -90 || latitude > 90 {
+			return seedConfig{}, errors.New("SEED_ORIGIN_LAT must be a number between -90 and 90")
+		}
+		longitude, err := strconv.ParseFloat(longitudeText, 64)
+		if err != nil || math.IsNaN(longitude) || math.IsInf(longitude, 0) || longitude < -180 || longitude > 180 {
+			return seedConfig{}, errors.New("SEED_ORIGIN_LNG must be a number between -180 and 180")
+		}
+		config.originLatitude = latitude
+		config.originLongitude = longitude
+		config.originConfigured = true
+	}
+	if radiusText != "" {
+		radius, err := strconv.Atoi(radiusText)
+		if err != nil || radius < 20 || radius > 2000 {
+			return seedConfig{}, errors.New("SEED_VENUE_RADIUS_M must be an integer between 20 and 2000")
+		}
+		config.venueRadius = radius
+	}
+	return config, nil
+}
+
+func metresToDegreeOffsets(latitude, northMeters, eastMeters float64) (float64, float64, error) {
+	if math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -90 || latitude > 90 ||
+		math.IsNaN(northMeters) || math.IsInf(northMeters, 0) ||
+		math.IsNaN(eastMeters) || math.IsInf(eastMeters, 0) {
+		return 0, 0, errors.New("latitude and metre offsets must be finite and latitude must be between -90 and 90")
+	}
+	longitudeScale := math.Cos(latitude * math.Pi / 180)
+	longitudeOffset := 0.0
+	if math.Abs(longitudeScale) >= 1e-9 {
+		longitudeOffset = eastMeters / (111320 * longitudeScale)
+	}
+	return northMeters / 111320, longitudeOffset, nil
+}
+
+func placeSeedVenues(config seedConfig) ([]seedVenue, error) {
+	if math.IsNaN(config.originLatitude) || math.IsInf(config.originLatitude, 0) ||
+		config.originLatitude < -90 || config.originLatitude > 90 ||
+		math.IsNaN(config.originLongitude) || math.IsInf(config.originLongitude, 0) ||
+		config.originLongitude < -180 || config.originLongitude > 180 ||
+		config.venueRadius < 20 || config.venueRadius > 2000 {
+		return nil, errors.New("seed origin or venue radius is outside its valid range")
+	}
+	offsets := []struct {
+		id     int
+		name   string
+		north  float64
+		east   float64
+		radius int
+		device int
+	}{
+		{id: 400, name: "LT 2", radius: config.venueRadius, device: 410},
+		{id: 401, name: "Science Lecture Theatre", north: 20, radius: config.venueRadius, device: 411},
+		{id: 402, name: "Innovation Lab", east: 25, radius: config.venueRadius, device: 412},
+		{id: 403, name: "Far Test Venue (5 km)", north: 5000, radius: 60, device: 413},
+	}
+	venues := make([]seedVenue, 0, len(offsets))
+	for _, offset := range offsets {
+		northMeters := offset.north
+		if config.originLatitude+northMeters/111320 > 90 {
+			northMeters = -math.Abs(northMeters)
+		} else if config.originLatitude+northMeters/111320 < -90 {
+			northMeters = math.Abs(northMeters)
+		}
+		latitudeOffset, longitudeOffset, err := metresToDegreeOffsets(
+			config.originLatitude, northMeters, offset.east)
+		if err != nil {
+			return nil, fmt.Errorf("place venue %s: %w", offset.name, err)
+		}
+		latitude := config.originLatitude + latitudeOffset
+		longitude := config.originLongitude
+		if longitudeOffset != 0 {
+			longitude = math.Mod(config.originLongitude+longitudeOffset+180, 360)
+			if longitude < 0 {
+				longitude += 360
+			}
+			longitude -= 180
+		}
+		if latitude < -90 || latitude > 90 {
+			return nil, fmt.Errorf("origin coordinates cannot place venue %s within valid coordinate ranges", offset.name)
+		}
+		venues = append(venues, seedVenue{
+			id: seedID(offset.id), name: offset.name, lat: latitude, lng: longitude,
+			radius: offset.radius, device: seedID(offset.device),
+		})
+	}
+	return venues, nil
+}
+
+func updateSeedVenues(ctx context.Context, tx pgx.Tx, plan seedPlan) error {
+	for _, venue := range plan.venues {
+		if err := execSeed(ctx, tx, "update venue "+venue.name, `
+INSERT INTO venues(id,institution_id,name,latitude,longitude,radius_meters)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(institution_id,id) DO UPDATE SET name=EXCLUDED.name,
+latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters`,
+			venue.id, institutionID, venue.name, venue.lat, venue.lng, venue.radius); err != nil {
+			return err
+		}
+		if err := execSeed(ctx, tx, "update open sessions for "+venue.name, `
+UPDATE lecture_sessions AS ls
+SET latitude=v.latitude,longitude=v.longitude,radius_meters=v.radius_meters
+FROM venues AS v
+WHERE ls.institution_id=$1 AND ls.venue_id=$2 AND ls.ended_at IS NULL
+  AND v.institution_id=ls.institution_id AND v.id=ls.venue_id`,
+			institutionID, venue.id); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func seedDemoData(ctx context.Context, tx pgx.Tx, hashes map[string][]byte, deviceHash []byte, now time.Time) (bool, error) {
-	if err := execSeed(ctx, tx, "institution", `
-		INSERT INTO institutions(id,name) VALUES($1,$2)
-		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name`, institutionID, "Northbridge Campus Institute"); err != nil {
-		return false, err
-	}
-	for _, faculty := range demoFaculties {
-		if err := execSeed(ctx, tx, "faculty "+faculty.name, `
-			INSERT INTO faculties(id,institution_id,name) VALUES($1,$2,$3)
-			ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name`, faculty.id, institutionID, faculty.name); err != nil {
-			return false, err
+func buildRegistrations(plan *seedPlan) {
+	for _, student := range plan.students {
+		if student.userID == "" {
+			continue
+		}
+		for _, offering := range plan.offerings {
+			course := courseByID(plan.courses, offering.courseID)
+			if offering.level != student.level ||
+				course.kind == "departmental" && course.departmentID != student.departmentID ||
+				course.kind == "general" && !contains(offering.autoTargets, student.departmentID) && offering.mode == "auto" {
+				continue
+			}
+			status := ""
+			studentOrdinal := studentIndex(plan.students, student.id)
+			switch offering.mode {
+			case "auto":
+				if course.kind == "departmental" || contains(offering.autoTargets, student.departmentID) {
+					status = "approved"
+				} else {
+					status = "pending"
+				}
+			case "open":
+				if studentOrdinal%2 == 0 {
+					status = "approved"
+				}
+			case "approval":
+				if studentOrdinal%4 == 0 {
+					status = "approved"
+				} else {
+					status = "pending"
+				}
+			}
+			if status != "" {
+				plan.registrations = append(plan.registrations, seedRegistration{
+					offeringID: offering.id, studentID: student.id, status: status,
+				})
+			}
 		}
 	}
-	for _, department := range demoDepartments {
-		if err := execSeed(ctx, tx, "department "+department.code, `
-			INSERT INTO departments(id,institution_id,faculty_id,name,code) VALUES($1,$2,$3,$4,$5)
-			ON CONFLICT(id) DO UPDATE SET faculty_id=EXCLUDED.faculty_id,name=EXCLUDED.name,code=EXCLUDED.code`,
-			department.id, institutionID, department.facultyID, department.name, department.code); err != nil {
-			return false, err
-		}
-		if err := execSeed(ctx, tx, "programme "+department.code, `
-			INSERT INTO programmes(id,institution_id,department_id,name,code) VALUES($1,$2,$3,$4,$5)
-			ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id,name=EXCLUDED.name,code=EXCLUDED.code`,
-			department.programmeID, institutionID, department.id, department.name+" Programme", department.code+"-BSC"); err != nil {
-			return false, err
-		}
-	}
+}
 
-	academicStart, academicEnd, semesterStart, semesterEnd := academicPeriod(now)
-	if _, err := tx.Exec(ctx, `UPDATE academic_sessions SET current=false WHERE institution_id=$1 AND current=true`, institutionID); err != nil {
-		return false, fmt.Errorf("clear current academic session: %w", err)
+func buildAttendance(plan *seedPlan) {
+	students := make([]seedStudent, 0, 3)
+	for _, student := range plan.students {
+		if student.departmentID == plan.departments[0].id && student.level == 100 {
+			students = append(students, student)
+		}
 	}
-	if err := execSeed(ctx, tx, "current academic session", `
-		INSERT INTO academic_sessions(id,institution_id,name,starts_on,ends_on,current)
-		VALUES($1,$2,$3,$4,$5,true)
-		ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on,current=true`,
-		academicID, institutionID, fmt.Sprintf("%d-%d", academicStart.Year(), academicEnd.Year()), academicStart, academicEnd); err != nil {
-		return false, err
+	if len(students) < 3 {
+		return
+	}
+	attendanceSessions := plan.sessions[:6]
+	studentA, studentB, studentC := students[0], students[1], students[2]
+	past := func(sessionIndex int, student seedStudent) time.Time {
+		return attendanceSessions[sessionIndex].startedAt.Add(time.Duration(5+sessionIndex) * time.Minute)
+	}
+	addWeb := func(sessionIndex int, student seedStudent, status string, onRoster bool) {
+		plan.webCheckins = append(plan.webCheckins, seedWebCheckin{
+			sessionID: attendanceSessions[sessionIndex].id, studentID: student.id,
+			status: status, at: past(sessionIndex, student), onRoster: onRoster,
+		})
+	}
+	addScan := func(sessionIndex int, student seedStudent) {
+		deviceID := venueByID(plan.venues, attendanceSessions[sessionIndex].venueID).device
+		plan.fingerprintScans = append(plan.fingerprintScans, seedFingerprint{
+			sessionID: attendanceSessions[sessionIndex].id, studentID: student.id,
+			deviceID: deviceID, at: past(sessionIndex, student).Add(20 * time.Second),
+		})
+	}
+	registered := make(map[string]bool)
+	for _, registration := range plan.registrations {
+		registered[registration.offeringID+":"+registration.studentID] = true
+	}
+	for _, student := range []seedStudent{studentA, studentB, studentC} {
+		key := plan.offerings[0].id + ":" + student.id
+		if !registered[key] {
+			plan.registrations = append(plan.registrations, seedRegistration{
+				offeringID: plan.offerings[0].id, studentID: student.id, status: "approved",
+			})
+		}
+	}
+	addWeb(0, studentA, "present", true)
+	addScan(0, studentA)
+	addWeb(0, studentB, "present", true)
+	addScan(0, studentB)
+	addWeb(1, studentB, "present", true)
+	addWeb(2, studentA, "present", true)
+	addScan(2, studentA)
+	addScan(2, studentC)
+	addWeb(3, studentB, "present", true)
+	addScan(3, studentB)
+	addWeb(4, studentA, "late", true)
+	addScan(4, studentA)
+	addWeb(4, studentB, "present", true)
+	plan.overrides = append(plan.overrides, seedOverride{
+		sessionID: attendanceSessions[4].id, studentID: studentB.id, status: "excused",
+		reason: "Medical appointment", code: "medical", note: "Approved medical absence",
+		actorID: plan.users[1].id, at: past(4, studentB),
+	})
+	addWeb(5, studentB, "present", true)
+	plan.overrides = append(plan.overrides, seedOverride{
+		sessionID: attendanceSessions[5].id, studentID: studentC.id, status: "absent",
+		reason: "No attendance evidence", code: "other", note: "Marked absent for demo reporting",
+		actorID: plan.users[1].id, at: attendanceSessions[5].startedAt.Add(60 * time.Minute),
+	})
+	for _, session := range attendanceSessions {
+		deviceID := venueByID(plan.venues, session.venueID).device
+		plan.heartbeats = append(plan.heartbeats, seedHeartbeat{
+			deviceID: deviceID, at: session.startedAt.Add(5 * time.Minute),
+		})
+	}
+	for _, session := range plan.sessions[6:] {
+		if session.venueID == plan.venues[0].id {
+			plan.heartbeats = append(plan.heartbeats, seedHeartbeat{deviceID: plan.venues[0].device, at: plan.now})
+		}
+	}
+	plan.webCheckins = append(plan.webCheckins, seedWebCheckin{
+		sessionID: plan.sessions[7].id, studentID: studentA.id, status: "present",
+		at: plan.now, onRoster: true,
+	})
+}
+
+func seedDemoData(ctx context.Context, tx pgx.Tx, plan seedPlan, hashes, deviceHashes map[string][]byte, invitationHash []byte) (map[string]bool, bool, error) {
+	now := plan.now
+	if err := execSeed(ctx, tx, "institution", `
+INSERT INTO institutions(id,name) VALUES($1,'Northbridge Campus Institute')
+ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name`, institutionID); err != nil {
+		return nil, false, err
+	}
+	for _, faculty := range plan.faculties {
+		if err := execSeed(ctx, tx, "faculty "+faculty.name, `
+INSERT INTO faculties(id,institution_id,name) VALUES($1,$2,$3)
+ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name`, faculty.id, institutionID, faculty.name); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, department := range plan.departments {
+		if err := execSeed(ctx, tx, "department "+department.code, `
+INSERT INTO departments(id,institution_id,faculty_id,name,code) VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(id) DO UPDATE SET faculty_id=EXCLUDED.faculty_id,name=EXCLUDED.name,code=EXCLUDED.code`,
+			department.id, institutionID, department.facultyID, department.name, department.code); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, programme := range plan.programmes {
+		if err := execSeed(ctx, tx, "programme "+programme.code, `
+INSERT INTO programmes(id,institution_id,department_id,name,code) VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id,name=EXCLUDED.name,code=EXCLUDED.code`,
+			programme.id, institutionID, programme.departmentID, programme.name, programme.code); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := execSeed(ctx, tx, "clear current academic session",
+		`UPDATE academic_sessions SET current=false WHERE institution_id=$1`, institutionID); err != nil {
+		return nil, false, err
+	}
+	if err := execSeed(ctx, tx, "academic session", `
+INSERT INTO academic_sessions(id,institution_id,name,starts_on,ends_on,current)
+VALUES($1,$2,$3,$4::date,$5::date,true)
+ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,starts_on=EXCLUDED.starts_on,
+ends_on=EXCLUDED.ends_on,current=true`,
+		seedID(12), institutionID, fmt.Sprintf("%d-%d", plan.academicStart.Year(), plan.academicStart.Year()+1),
+		plan.academicStart.Format("2006-01-02"), plan.academicEnd.Format("2006-01-02")); err != nil {
+		return nil, false, err
 	}
 	if err := execSeed(ctx, tx, "current semester", `
-		INSERT INTO semesters(id,institution_id,academic_session_id,name,starts_on,ends_on)
-		VALUES($1,$2,$3,$4,$5,$6)
-		ON CONFLICT(id) DO UPDATE SET academic_session_id=EXCLUDED.academic_session_id,name=EXCLUDED.name,
-		starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on`,
-		semesterID, institutionID, academicID, "Current Semester", semesterStart, semesterEnd); err != nil {
-		return false, err
+INSERT INTO semesters(id,institution_id,academic_session_id,name,starts_on,ends_on)
+VALUES($1,$2,$3,'Semester 1',$4::date,$5::date)
+ON CONFLICT(id) DO UPDATE SET academic_session_id=EXCLUDED.academic_session_id,
+name=EXCLUDED.name,starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on`,
+		seedID(13), institutionID, seedID(12),
+		plan.semesterStart.Format("2006-01-02"), plan.semesterEnd.Format("2006-01-02")); err != nil {
+		return nil, false, err
 	}
-
-	credentials := makeDemoCredentials()
-	for _, credential := range credentials {
-		if err := execSeed(ctx, tx, "user "+credential.email, `
-			INSERT INTO users(id,institution_id,email,password_hash,display_name,email_verified_at,disabled_at)
-			VALUES($1,$2,$3,$4,$5,$6,NULL)
-			ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
-			display_name=EXCLUDED.display_name,email_verified_at=EXCLUDED.email_verified_at,disabled_at=NULL`,
-			credential.userID, institutionID, credential.email, hashes[credential.userID], credential.label, now); err != nil {
-			return false, err
+	for _, user := range plan.users {
+		if err := execSeed(ctx, tx, "user "+user.email, `
+INSERT INTO users(id,institution_id,email,password_hash,display_name,email_verified_at,disabled_at)
+VALUES($1,$2,$3,$4,$5,$6,NULL)
+ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,password_hash=EXCLUDED.password_hash,
+display_name=EXCLUDED.display_name,email_verified_at=EXCLUDED.email_verified_at,disabled_at=NULL`,
+			user.id, institutionID, user.email, hashes[user.id], user.label, now); err != nil {
+			return nil, false, err
 		}
-	}
-	for _, credential := range credentials {
-		var faculty, department any
-		if credential.facultyID != "" {
-			faculty = credential.facultyID
-		}
-		if credential.departmentID != "" {
-			department = credential.departmentID
-		}
-		if err := execSeed(ctx, tx, "role for "+credential.email, `
-			INSERT INTO role_assignments(institution_id,user_id,role,scope_type,faculty_id,department_id)
-			VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
-			institutionID, credential.userID, credential.role, credential.scopeType, faculty, department); err != nil {
-			return false, err
+		if user.role == "lecturer" {
+			if err := execSeed(ctx, tx, "staff record "+user.staffNo, `
+INSERT INTO staff_records(institution_id,department_id,staff_no,email,display_name,user_id)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(institution_id,staff_no) DO UPDATE SET department_id=EXCLUDED.department_id,
+email=EXCLUDED.email,display_name=EXCLUDED.display_name,user_id=EXCLUDED.user_id`,
+				institutionID, user.deptID, user.staffNo, user.email, user.label, user.id); err != nil {
+				return nil, false, err
+			}
 		}
 	}
-
-	for _, venue := range demoVenues {
-		if err := execSeed(ctx, tx, "venue "+venue.name, `
-			INSERT INTO venues(id,institution_id,name,latitude,longitude,radius_meters)
-			VALUES($1,$2,$3,$4,$5,$6)
-			ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,latitude=EXCLUDED.latitude,
-			longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters`,
-			venue.id, institutionID, venue.name, venue.latitude, venue.longitude, venue.radius); err != nil {
-			return false, err
-		}
-	}
-	for _, student := range demoStudents() {
+	for _, student := range plan.students {
 		var claimedBy any
-		if student.claimed {
+		if student.userID != "" {
 			claimedBy = student.userID
 		}
 		if err := execSeed(ctx, tx, "student record "+student.matric, `
-			INSERT INTO student_records(id,institution_id,department_id,programme_id,matric_no,email,display_name,level,claimed_by_user_id)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
-			ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id,programme_id=EXCLUDED.programme_id,
-			matric_no=EXCLUDED.matric_no,email=EXCLUDED.email,display_name=EXCLUDED.display_name,level=EXCLUDED.level,
-			claimed_by_user_id=coalesce(student_records.claimed_by_user_id,EXCLUDED.claimed_by_user_id)`,
-			student.id, institutionID, student.departmentID, student.programmeID, student.matric, student.email,
-			student.name, student.level, claimedBy); err != nil {
-			return false, err
+INSERT INTO student_records(id,institution_id,department_id,programme_id,matric_no,email,display_name,level,claimed_by_user_id)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id,programme_id=EXCLUDED.programme_id,
+matric_no=EXCLUDED.matric_no,email=EXCLUDED.email,display_name=EXCLUDED.display_name,
+level=EXCLUDED.level,claimed_by_user_id=EXCLUDED.claimed_by_user_id`,
+			student.id, institutionID, student.departmentID, student.programmeID, student.matric,
+			student.email, student.name, student.level, claimedBy); err != nil {
+			return nil, false, err
+		}
+		if student.userID != "" {
+			if err := execSeed(ctx, tx, "student role "+student.matric, `
+INSERT INTO role_assignments(institution_id,user_id,role,scope_type,department_id)
+VALUES($1,$2,'student','department',$3) ON CONFLICT DO NOTHING`,
+				institutionID, student.userID, student.departmentID); err != nil {
+				return nil, false, err
+			}
 		}
 	}
-	for _, student := range demoStudents() {
-		if !student.claimed {
-			continue
+	for _, user := range plan.users {
+		var faculty, department any
+		if user.facultyID != "" {
+			faculty = user.facultyID
 		}
-		if err := execSeed(ctx, tx, "student role "+student.email, `
-			INSERT INTO role_assignments(institution_id,user_id,role,scope_type,department_id)
-			VALUES($1,$2,'student','department',$3) ON CONFLICT DO NOTHING`,
-			institutionID, student.userID, student.departmentID); err != nil {
-			return false, err
+		if user.deptID != "" {
+			department = user.deptID
 		}
-	}
-	for _, lecturer := range lecturers() {
-		if err := execSeed(ctx, tx, "staff record "+lecturer.email, `
-			INSERT INTO staff_records(institution_id,department_id,staff_no,email,display_name,user_id)
-			VALUES($1,$2,$3,$4,$5,$6)
-			ON CONFLICT(institution_id,staff_no) DO UPDATE SET department_id=EXCLUDED.department_id,
-			email=EXCLUDED.email,display_name=EXCLUDED.display_name,user_id=EXCLUDED.user_id`,
-			institutionID, lecturer.departmentID, lecturer.staffNo, lecturer.email, lecturer.name, lecturer.userID); err != nil {
-			return false, err
+		if err := execSeed(ctx, tx, "role "+user.role+" for "+user.email, `
+INSERT INTO role_assignments(institution_id,user_id,role,scope_type,faculty_id,department_id)
+VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+			institutionID, user.id, user.role, user.scopeType, faculty, department); err != nil {
+			return nil, false, err
 		}
 	}
-
-	if err := seedCourses(ctx, tx); err != nil {
-		return false, err
-	}
-	if err := seedTeachingAndRegistration(ctx, tx, now); err != nil {
-		return false, err
-	}
-	deviceCreated, err := seedDevice(ctx, tx, deviceHash)
-	if err != nil {
-		return false, err
-	}
-	if err := seedAttendanceHistory(ctx, tx, now); err != nil {
-		return false, err
-	}
-	if err := seedPendingWork(ctx, tx, now); err != nil {
-		return false, err
-	}
-	return deviceCreated, nil
-}
-
-func seedCourses(ctx context.Context, tx pgx.Tx) error {
-	seenCourses := map[string]bool{}
-	for _, course := range demoCourses {
-		if seenCourses[course.id] {
-			continue
-		}
-		seenCourses[course.id] = true
+	for _, course := range plan.courses {
 		if err := execSeed(ctx, tx, "course "+course.code, `
-			INSERT INTO courses(id,institution_id,department_id,code,title,kind,description,credits)
-			VALUES($1,$2,$3,$4,$5,$6,$7,3)
-			ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id,code=EXCLUDED.code,
-			title=EXCLUDED.title,kind=EXCLUDED.kind,description=EXCLUDED.description`,
+INSERT INTO courses(id,institution_id,department_id,code,title,kind,description,credits)
+VALUES($1,$2,$3,$4,$5,$6,$7,3)
+ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id,code=EXCLUDED.code,
+title=EXCLUDED.title,kind=EXCLUDED.kind,description=EXCLUDED.description,credits=EXCLUDED.credits`,
 			course.id, institutionID, course.departmentID, course.code, course.title, course.kind, course.description); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, offering := range plan.offerings {
+		if err := execSeed(ctx, tx, "offering "+offering.id, `
+INSERT INTO course_offerings(id,institution_id,course_id,semester_id,coordinator_user_id,level,
+registration_mode,roster_policy,min_attendance_pct,late_counts_as_attended)
+VALUES($1,$2,$3,$4,$5,$6,$7,'registered_only',$8,$9)
+ON CONFLICT(id) DO UPDATE SET course_id=EXCLUDED.course_id,semester_id=EXCLUDED.semester_id,
+coordinator_user_id=EXCLUDED.coordinator_user_id,level=EXCLUDED.level,
+registration_mode=EXCLUDED.registration_mode,min_attendance_pct=EXCLUDED.min_attendance_pct,
+late_counts_as_attended=EXCLUDED.late_counts_as_attended`,
+			offering.id, institutionID, offering.courseID, seedID(13), offering.lecturerID,
+			offering.level, offering.mode, offering.minimumPercent, offering.lateCounts); err != nil {
+			return nil, false, err
+		}
+		if err := execSeed(ctx, tx, "offering lecturer "+offering.id, `
+INSERT INTO offering_lecturers(institution_id,offering_id,lecturer_user_id)
+VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, institutionID, offering.id, offering.lecturerID); err != nil {
+			return nil, false, err
+		}
+		for _, departmentID := range offering.autoTargets {
+			if err := execSeed(ctx, tx, "auto target "+offering.id, `
+INSERT INTO offering_auto_targets(institution_id,offering_id,department_id,level)
+VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, institutionID, offering.id, departmentID, offering.level); err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	for _, venue := range plan.venues {
+		if err := execSeed(ctx, tx, "venue "+venue.name, `
+INSERT INTO venues(id,institution_id,name,latitude,longitude,radius_meters)
+VALUES($1,$2,$3,$4,$5,$6)
+ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,latitude=EXCLUDED.latitude,
+longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters`,
+			venue.id, institutionID, venue.name, venue.lat, venue.lng, venue.radius); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, timetable := range plan.timetables {
+		if err := execSeed(ctx, tx, "timetable "+timetable.id, `
+INSERT INTO timetable(id,institution_id,offering_id,venue_id,weekday,starts_at,ends_at)
+VALUES($1,$2,$3,$4,$5,$6::time,$7::time)
+ON CONFLICT(institution_id,id) DO UPDATE SET offering_id=EXCLUDED.offering_id,
+venue_id=EXCLUDED.venue_id,weekday=EXCLUDED.weekday,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at`,
+			timetable.id, institutionID, timetable.offeringID, timetable.venueID,
+			timetable.weekday, timetable.startsAt, timetable.endsAt); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, registration := range plan.registrations {
+		var approvedAt any
+		if registration.status == "approved" {
+			approvedAt = now
+		}
+		if err := execSeed(ctx, tx, "registration "+registration.studentID, `
+INSERT INTO course_registrations(institution_id,offering_id,student_record_id,status,approved_at)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(institution_id,offering_id,student_record_id) DO UPDATE SET
+status=EXCLUDED.status,approved_at=EXCLUDED.approved_at`,
+			institutionID, registration.offeringID, registration.studentID, registration.status, approvedAt); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, session := range plan.sessions {
+		if err := execSeed(ctx, tx, "lecture session "+session.id, `
+INSERT INTO lecture_sessions(id,institution_id,offering_id,venue_id,timetable_id,started_by_user_id,
+started_at,ended_at,latitude,longitude,radius_meters,rotating_code,static_code,code_expires_at,late_after_min)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,NULL,NULL,$12)
+ON CONFLICT(id) DO UPDATE SET offering_id=EXCLUDED.offering_id,venue_id=EXCLUDED.venue_id,
+timetable_id=EXCLUDED.timetable_id,started_by_user_id=EXCLUDED.started_by_user_id,
+started_at=EXCLUDED.started_at,ended_at=EXCLUDED.ended_at,latitude=EXCLUDED.latitude,
+longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters,rotating_code=true,
+static_code=NULL,code_expires_at=NULL,late_after_min=EXCLUDED.late_after_min`,
+			session.id, institutionID, session.offeringID, session.venueID, session.timetable,
+			session.lecturerID, session.startedAt, session.endedAt, session.latitude,
+			session.longitude, session.radius, session.lateAfter); err != nil {
+			return nil, false, err
+		}
+	}
+	createdDevices := make(map[string]bool, len(plan.venues))
+	for _, venue := range plan.venues {
+		var created string
+		err := tx.QueryRow(ctx, `
+INSERT INTO devices(id,institution_id,venue_id,name,key_hash)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(institution_id,id) DO NOTHING
+RETURNING id::text`, venue.device, institutionID, venue.id,
+			venue.name+" Scanner", deviceHashes[venue.device]).Scan(&created)
+		if err == nil {
+			createdDevices[venue.device] = true
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("seed scanner at %s: %w", venue.name, err)
+		}
+	}
+	for venueIndex, venue := range plan.venues {
+		for studentIndex, student := range plan.students {
+			slot := seedDeviceSlot{
+				id: seedID(1000 + venueIndex*100 + studentIndex + 1), deviceID: venue.device,
+				studentID: student.id, number: studentIndex + 1,
+			}
+			if err := execSeed(ctx, tx, "device slot "+slot.id, `
+INSERT INTO device_slots(id,institution_id,device_id,student_record_id,slot_number)
+VALUES($1,$2,$3,$4,$5)
+ON CONFLICT(institution_id,device_id,slot_number) DO UPDATE SET
+id=EXCLUDED.id,student_record_id=EXCLUDED.student_record_id`,
+				slot.id, institutionID, slot.deviceID, slot.studentID, slot.number); err != nil {
+				return nil, false, err
+			}
+		}
+	}
+	if err := seedAttendanceRows(ctx, tx, plan); err != nil {
+		return nil, false, err
+	}
+	invitationCreated, err := seedWorkflowRows(ctx, tx, plan, invitationHash)
+	if err != nil {
+		return nil, false, err
+	}
+	return createdDevices, invitationCreated, nil
+}
+
+func seedAttendanceRows(ctx context.Context, tx pgx.Tx, plan seedPlan) error {
+	deviceIDs := make([]string, 0, len(plan.venues))
+	for _, venue := range plan.venues {
+		deviceIDs = append(deviceIDs, venue.device)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM device_heartbeats WHERE institution_id=$1 AND device_id=ANY($2::uuid[])`,
+		institutionID, deviceIDs); err != nil {
+		return fmt.Errorf("clear demo device heartbeats: %w", err)
+	}
+	for _, heartbeat := range plan.heartbeats {
+		if err := execSeed(ctx, tx, "device heartbeat", `
+INSERT INTO device_heartbeats(institution_id,device_id,heartbeat_at) VALUES($1,$2,$3)`,
+			institutionID, heartbeat.deviceID, heartbeat.at); err != nil {
 			return err
 		}
 	}
-	for _, course := range demoCourses {
-		if err := execSeed(ctx, tx, "offering "+course.code, `
-			INSERT INTO course_offerings(id,institution_id,course_id,semester_id,coordinator_user_id,level,
-			registration_mode,roster_policy,min_attendance_pct,late_counts_as_attended)
-			VALUES($1,$2,$3,$4,$5,$6,$7,'registered_only',75,true)
-			ON CONFLICT(id) DO UPDATE SET course_id=EXCLUDED.course_id,semester_id=EXCLUDED.semester_id,
-			coordinator_user_id=EXCLUDED.coordinator_user_id,level=EXCLUDED.level,
-			registration_mode=EXCLUDED.registration_mode,roster_policy=EXCLUDED.roster_policy,
-			min_attendance_pct=EXCLUDED.min_attendance_pct,late_counts_as_attended=EXCLUDED.late_counts_as_attended`,
-			course.offeringID, institutionID, course.id, semesterID, course.lecturerID, course.level, course.mode); err != nil {
+	for _, checkin := range plan.webCheckins {
+		venue := venueByID(plan.venues, sessionByID(plan.sessions, checkin.sessionID).venueID)
+		if err := execSeed(ctx, tx, "web check-in "+checkin.sessionID, `
+INSERT INTO web_checkins(institution_id,session_id,student_record_id,latitude,longitude,
+accuracy_meters,distance_meters,device_hash,on_roster,status,created_at)
+VALUES($1,$2,$3,$4,$5,5,2,NULL,$6,$7,$8)
+ON CONFLICT(session_id,student_record_id) DO UPDATE SET latitude=EXCLUDED.latitude,
+longitude=EXCLUDED.longitude,accuracy_meters=EXCLUDED.accuracy_meters,
+distance_meters=EXCLUDED.distance_meters,on_roster=EXCLUDED.on_roster,status=EXCLUDED.status,
+created_at=EXCLUDED.created_at`,
+			institutionID, checkin.sessionID, checkin.studentID, venue.lat, venue.lng,
+			checkin.onRoster, checkin.status, checkin.at); err != nil {
 			return err
 		}
-		if err := execSeed(ctx, tx, "lecturer assignment "+course.code, `
-			INSERT INTO offering_lecturers(institution_id,offering_id,lecturer_user_id)
-			VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, institutionID, course.offeringID, course.lecturerID); err != nil {
+	}
+	for _, scan := range plan.fingerprintScans {
+		if err := execSeed(ctx, tx, "fingerprint scan "+scan.sessionID, `
+INSERT INTO fingerprint_scans(institution_id,session_id,student_record_id,device_id,confidence,client_scanned_at,created_at)
+VALUES($1,$2,$3,$4,0.9900,$5,$5)
+ON CONFLICT(session_id,student_record_id) DO UPDATE SET device_id=EXCLUDED.device_id,
+confidence=EXCLUDED.confidence,client_scanned_at=EXCLUDED.client_scanned_at,created_at=EXCLUDED.created_at`,
+			institutionID, scan.sessionID, scan.studentID, scan.deviceID, scan.at); err != nil {
 			return err
 		}
-		if course.kind == "general" {
-			for _, department := range demoDepartments {
-				if err := execSeed(ctx, tx, "general auto target "+course.code, `
-					INSERT INTO offering_auto_targets(institution_id,offering_id,department_id,level)
-					VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-					institutionID, course.offeringID, department.id, course.level); err != nil {
-					return err
-				}
-			}
+	}
+	for _, override := range plan.overrides {
+		if err := execSeed(ctx, tx, "attendance override "+override.sessionID, `
+INSERT INTO attendance_overrides(institution_id,session_id,student_record_id,status,reason,
+reason_code,note,changed_by_user_id,created_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT(session_id,student_record_id) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,
+reason_code=EXCLUDED.reason_code,note=EXCLUDED.note,changed_by_user_id=EXCLUDED.changed_by_user_id,
+created_at=EXCLUDED.created_at`,
+			institutionID, override.sessionID, override.studentID, override.status, override.reason,
+			override.code, override.note, override.actorID, override.at); err != nil {
+			return err
+		}
+	}
+	for _, session := range plan.sessions {
+		if session.endedAt == nil {
+			continue
+		}
+		if err := execSeed(ctx, tx, "session audit "+session.id, `
+INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details,created_at)
+SELECT $1,$2,'session_ended','lecture_session',$3,'{"seeded":true}'::jsonb,$4
+WHERE NOT EXISTS (
+  SELECT 1 FROM audit_log WHERE institution_id=$1 AND resource_type='lecture_session'
+    AND resource_id=$3 AND action='session_ended' AND details->>'seeded'='true'
+)`, institutionID, session.lecturerID, session.id, *session.endedAt); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func seedTeachingAndRegistration(ctx context.Context, tx pgx.Tx, now time.Time) error {
-	assignments := weeklyAssignments(now)
-	for _, assignment := range assignments {
-		if err := execSeed(ctx, tx, "weekly timetable", `
-			INSERT INTO timetable(id,institution_id,offering_id,venue_id,weekday,starts_at,ends_at)
-			VALUES($1,$2,$3,$4,$5,$6::time,$7::time)
-			ON CONFLICT(institution_id,id) DO UPDATE SET offering_id=EXCLUDED.offering_id,venue_id=EXCLUDED.venue_id,
-			weekday=EXCLUDED.weekday,starts_at=EXCLUDED.starts_at,ends_at=EXCLUDED.ends_at`,
-			assignment.timetableID, institutionID, assignment.offeringID, assignment.venueID,
-			assignment.weekday, assignment.startsAt, assignment.endsAt); err != nil {
-			return err
-		}
-	}
-	for _, student := range demoStudents() {
-		for _, course := range demoCourses {
-			if student.level != course.level || !eligibleForCourse(student, course) || course.mode == "closed" {
-				continue
-			}
-			status := "approved"
-			if course.mode == "approval" {
-				status = "pending"
-			}
-			if err := execSeed(ctx, tx, "registration "+student.matric, `
-				INSERT INTO course_registrations(institution_id,offering_id,student_record_id,status,approved_at)
-				VALUES($1,$2,$3,$4,CASE WHEN $4='approved' THEN $5 ELSE NULL END)
-				ON CONFLICT(institution_id,offering_id,student_record_id) DO UPDATE SET
-				status=EXCLUDED.status,approved_at=EXCLUDED.approved_at`,
-				institutionID, course.offeringID, student.id, status, now); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func eligibleForCourse(student demoStudent, course demoCourse) bool {
-	if course.kind == "departmental" {
-		return course.departmentID == student.departmentID
-	}
-	return course.kind == "general"
-}
-
-func seedDevice(ctx context.Context, tx pgx.Tx, deviceHash []byte) (bool, error) {
-	var createdID string
+func seedWorkflowRows(ctx context.Context, tx pgx.Tx, plan seedPlan, invitationHash []byte) (bool, error) {
+	var insertedInvitation string
 	err := tx.QueryRow(ctx, `
-		INSERT INTO devices(id,institution_id,venue_id,name,key_hash)
-		VALUES($1,$2,$3,'Engineering Hall Scanner',$4)
-		ON CONFLICT(institution_id,id) DO NOTHING
-		RETURNING id::text`, deviceID, institutionID, venueAID, deviceHash).Scan(&createdID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		if err := execSeed(ctx, tx, "scanner student slot", `
-			INSERT INTO device_slots(institution_id,device_id,student_record_id,slot_number)
-			VALUES($1,$2,$3,1) ON CONFLICT(institution_id,device_id,slot_number)
-			DO UPDATE SET student_record_id=EXCLUDED.student_record_id`,
-			institutionID, deviceID, student100AID); err != nil {
+INSERT INTO invitations(id,institution_id,email,role,scope_type,faculty_id,department_id,token_hash,expires_at,accepted_at)
+VALUES($1,$2,'new-lecturer@attendance.test','lecturer','department',NULL,$3,$4,$5,NULL)
+ON CONFLICT(id) DO NOTHING
+RETURNING id::text`, seedID(800), institutionID, plan.departments[0].id,
+		invitationHash, plan.now.Add(7*24*time.Hour)).Scan(&insertedInvitation)
+	invitationCreated := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("seed pending invitation: %w", err)
+	}
+	if !invitationCreated {
+		if err := execSeed(ctx, tx, "refresh pending invitation expiry", `
+UPDATE invitations SET expires_at=$2 WHERE institution_id=$1 AND id=$3 AND accepted_at IS NULL`,
+			institutionID, plan.now.Add(7*24*time.Hour), seedID(800)); err != nil {
 			return false, err
 		}
-		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("seed demo scanner: %w", err)
-	}
-	if err := execSeed(ctx, tx, "scanner student slot", `
-		INSERT INTO device_slots(institution_id,device_id,student_record_id,slot_number)
-		VALUES($1,$2,$3,1) ON CONFLICT(institution_id,device_id,slot_number)
-		DO UPDATE SET student_record_id=EXCLUDED.student_record_id`,
-		institutionID, deviceID, student100AID); err != nil {
+	if err := execSeed(ctx, tx, "pending signup request", `
+INSERT INTO signup_requests(id,institution_id,matric_no,email,status,created_at)
+VALUES($1,$2,'ECE-100-99','pending-signup@attendance.test','pending',$3)
+ON CONFLICT(id) DO NOTHING`,
+		seedID(801), institutionID, plan.now); err != nil {
 		return false, err
 	}
-	return true, nil
-}
-
-func seedAttendanceHistory(ctx context.Context, tx pgx.Tx, now time.Time) error {
-	venue := demoVenues[0]
-	fixtures := demoAttendanceFixtures()
-	for index := 0; index < 8; index++ {
-		sessionID := demoUUID(4000 + index)
-		startedAt := time.Date(now.Year(), now.Month(), now.Day(), 10, 0, 0, 0, time.UTC).AddDate(0, 0, -(index + 1))
-		endedAt := startedAt.Add(time.Hour)
-		if err := execSeed(ctx, tx, "past lecture session", `
-			INSERT INTO lecture_sessions(id,institution_id,offering_id,venue_id,timetable_id,started_by_user_id,
-			started_at,ended_at,latitude,longitude,radius_meters,rotating_code,late_after_min)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,10)
-			ON CONFLICT(institution_id,id) DO UPDATE SET started_at=EXCLUDED.started_at,ended_at=EXCLUDED.ended_at`,
-			sessionID, institutionID, offering100ID, venue.id, assignmentsTimetableID(0), lecturerAID,
-			startedAt, endedAt, venue.latitude, venue.longitude, venue.radius); err != nil {
-			return err
+	for venueIndex, venue := range plan.venues {
+		student := firstStudent(plan.students)
+		slotNumber := studentIndex(plan.students, student.id) + 1
+		slot := seedID(1000 + venueIndex*100 + slotNumber)
+		if err := execSeed(ctx, tx, "pending device enrolment "+venue.name, `
+INSERT INTO enrolment_tasks(id,institution_id,device_id,student_record_id,slot_id,status,created_at,completed_at)
+VALUES($1,$2,$3,$4,$5,'pending',$6,NULL)
+ON CONFLICT(id) DO NOTHING`,
+			seedID(810+venueIndex), institutionID, venue.device, student.id, slot, plan.now); err != nil {
+			return false, err
 		}
-		for _, fixture := range fixtures[index] {
-			if fixture.webStatus != "" {
-				if err := insertWebCheckin(ctx, tx, sessionID, fixture.student, startedAt.Add(15*time.Minute), fixture.webStatus); err != nil {
-					return err
-				}
+	}
+	for _, session := range plan.sessions {
+		if session.endedAt == nil && session.venueID == plan.venues[1].id {
+			note := "Scanner offline for maintenance"
+			if err := execSeed(ctx, tx, "scanner unavailable status", `
+INSERT INTO lecture_session_scanner_status(institution_id,session_id,state,note,changed_by_user_id,created_at)
+VALUES($1,$2,'unavailable',$3,$4,$5)
+ON CONFLICT(institution_id,session_id) DO UPDATE SET state=EXCLUDED.state,note=EXCLUDED.note,
+changed_by_user_id=EXCLUDED.changed_by_user_id,created_at=EXCLUDED.created_at`,
+				institutionID, session.id, note, session.lecturerID, plan.now); err != nil {
+				return false, err
 			}
-			if fixture.scan {
-				if err := insertFingerprintScan(ctx, tx, sessionID, fixture.student, startedAt.Add(15*time.Minute)); err != nil {
-					return err
-				}
-			}
-			if fixture.overrideStatus != "" {
-				if err := insertOverride(ctx, tx, sessionID, fixture.student, fixture.overrideStatus, fixture.overrideReason); err != nil {
-					return err
-				}
+			if err := execSeed(ctx, tx, "scanner unavailable audit", `
+INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details,created_at)
+SELECT $1,$2,'scanner_unavailable','lecture_session',$3,
+jsonb_build_object('seeded',true,'note',$4::text),$5
+WHERE NOT EXISTS (
+  SELECT 1 FROM audit_log WHERE institution_id=$1 AND resource_type='lecture_session'
+    AND resource_id=$3 AND action='scanner_unavailable' AND details->>'seeded'='true'
+)`, institutionID, session.lecturerID, session.id, note, plan.now); err != nil {
+				return false, err
 			}
 		}
 	}
-	if err := seedOpenSession(ctx, tx, now); err != nil {
-		return err
+	return invitationCreated, nil
+}
+
+func resetDemoInstitution(ctx context.Context, tx pgx.Tx) error {
+	tables := []string{
+		"audit_log", "email_outbox", "disputes", "enrolment_tasks", "attendance_overrides",
+		"lecture_session_scanner_status", "device_heartbeats", "fingerprint_scans", "web_checkins",
+		"lecture_sessions", "device_slots", "devices", "timetable", "course_registrations",
+		"offering_auto_targets", "offering_lecturers", "course_offerings", "courses", "semesters",
+		"academic_sessions", "invitations", "signup_requests", "password_resets", "email_verifications",
+		"refresh_tokens", "role_assignments", "staff_records", "student_records", "users",
+		"programmes", "departments", "faculties",
+	}
+	for _, table := range tables {
+		query := "DELETE FROM " + table + " WHERE institution_id=$1"
+		if _, err := tx.Exec(ctx, query, institutionID); err != nil {
+			return fmt.Errorf("reset demo table %s: %w", table, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM institutions WHERE id=$1`, institutionID); err != nil {
+		return fmt.Errorf("reset demo institution: %w", err)
 	}
 	return nil
 }
 
-func demoAttendanceFixtures() [][]attendanceFixture {
-	fixtures := make([][]attendanceFixture, 8)
-	lowStudent := demoStudents()[0]
-	for index := range fixtures {
-		if index < 5 {
-			fixtures[index] = append(fixtures[index], attendanceFixture{
-				student: lowStudent, webStatus: "present", scan: true,
-			})
-		} else {
-			fixtures[index] = append(fixtures[index], attendanceFixture{
-				student: lowStudent, overrideStatus: "absent", overrideReason: "Demo absence for below-threshold report",
-			})
-		}
-	}
-	scenarioStudents := make([]demoStudent, 0, 3)
-	for _, department := range demoDepartments[1:] {
-		for _, student := range demoStudents() {
-			if student.departmentID == department.id && student.level == 100 {
-				scenarioStudents = append(scenarioStudents, student)
-				break
-			}
-		}
-	}
-	if len(scenarioStudents) >= 3 {
-		fixtures[0] = append(fixtures[0], attendanceFixture{
-			student: scenarioStudents[0], webStatus: "present", scan: true,
-			overrideStatus: "present", overrideReason: "Reviewed demo attendance",
-		})
-		fixtures[1] = append(fixtures[1], attendanceFixture{student: scenarioStudents[1], webStatus: "present"})
-		fixtures[2] = append(fixtures[2], attendanceFixture{student: scenarioStudents[2], scan: true})
-	}
-	fixtures[0] = append(fixtures[0], attendanceFixture{
-		student: demoStudentInDepartment(departmentAID, 100, lowStudent.id), webStatus: "late", scan: true,
-	})
-	return fixtures
-}
-
-func seedOpenSession(ctx context.Context, tx pgx.Tx, now time.Time) error {
-	venue := demoVenues[0]
-	startedAt := now.Add(-10 * time.Minute)
-	return execSeed(ctx, tx, "open demo session", `
-		INSERT INTO lecture_sessions(id,institution_id,offering_id,venue_id,timetable_id,started_by_user_id,
-		started_at,ended_at,latitude,longitude,radius_meters,rotating_code,late_after_min)
-		VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9,$10,true,10)
-		ON CONFLICT(institution_id,id) DO UPDATE SET started_at=EXCLUDED.started_at,ended_at=NULL`,
-		demoUUID(4100), institutionID, offering100ID, venue.id, assignmentsTimetableID(0),
-		lecturerAID, startedAt, venue.latitude, venue.longitude, venue.radius)
-}
-
-func insertWebCheckin(ctx context.Context, tx pgx.Tx, sessionID string, student demoStudent, checkedAt time.Time, status string) error {
-	venue := demoVenues[0]
-	return execSeed(ctx, tx, "demo web check-in", `
-		INSERT INTO web_checkins(institution_id,session_id,student_record_id,latitude,longitude,accuracy_meters,
-		distance_meters,device_hash,on_roster,status,created_at)
-		VALUES($1,$2,$3,$4,$5,8,0,NULL,true,$6,$7)
-		ON CONFLICT(session_id,student_record_id) DO UPDATE SET status=EXCLUDED.status,created_at=EXCLUDED.created_at`,
-		institutionID, sessionID, student.id, venue.latitude, venue.longitude, status, checkedAt)
-}
-
-func insertFingerprintScan(ctx context.Context, tx pgx.Tx, sessionID string, student demoStudent, scannedAt time.Time) error {
-	return execSeed(ctx, tx, "demo fingerprint scan", `
-		INSERT INTO fingerprint_scans(institution_id,session_id,student_record_id,device_id,confidence,client_scanned_at,created_at)
-		VALUES($1,$2,$3,$4,0.9900,$5,$5)
-		ON CONFLICT(session_id,student_record_id) DO UPDATE SET device_id=EXCLUDED.device_id,
-		confidence=EXCLUDED.confidence,client_scanned_at=EXCLUDED.client_scanned_at,created_at=EXCLUDED.created_at`,
-		institutionID, sessionID, student.id, deviceID, scannedAt)
-}
-
-func insertOverride(ctx context.Context, tx pgx.Tx, sessionID string, student demoStudent, status, reason string) error {
-	return execSeed(ctx, tx, "demo attendance override", `
-		INSERT INTO attendance_overrides(institution_id,session_id,student_record_id,status,reason,changed_by_user_id)
-		VALUES($1,$2,$3,$4,$5,$6)
-		ON CONFLICT(session_id,student_record_id) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,
-		changed_by_user_id=EXCLUDED.changed_by_user_id`,
-		institutionID, sessionID, student.id, status, reason, adminID)
-}
-
-func seedPendingWork(ctx context.Context, tx pgx.Tx, now time.Time) error {
-	if err := execSeed(ctx, tx, "pending signup request", `
-		INSERT INTO signup_requests(institution_id,matric_no,email,status)
-		SELECT $1,'NEW-REQUEST-001','new-student@attendance.test','pending'
-		WHERE NOT EXISTS(SELECT 1 FROM signup_requests WHERE institution_id=$1 AND matric_no='NEW-REQUEST-001' AND status='pending')`,
-		institutionID); err != nil {
-		return err
-	}
-	inviteHash := sha256.Sum256([]byte("attendance-demo-pending-invitation-token"))
-	if err := execSeed(ctx, tx, "pending invitation", `
-		INSERT INTO invitations(institution_id,email,role,scope_type,faculty_id,department_id,token_hash,expires_at)
-		VALUES($1,'invited-lecturer@attendance.test','lecturer','department',NULL,$2,$3,$4)
-		ON CONFLICT(token_hash) DO UPDATE SET expires_at=EXCLUDED.expires_at`,
-		institutionID, departmentAID, inviteHash[:], now.Add(7*24*time.Hour)); err != nil {
-		return err
-	}
-	return nil
-}
-
-func execSeed(ctx context.Context, tx pgx.Tx, name, query string, args ...any) error {
+func execSeed(ctx context.Context, tx pgx.Tx, label, query string, args ...any) error {
 	if _, err := tx.Exec(ctx, query, args...); err != nil {
-		return fmt.Errorf("seed %s: %w", name, err)
+		return fmt.Errorf("seed %s: %w", label, err)
 	}
 	return nil
 }
 
-func demoStudents() []demoStudent {
-	legacy := []demoStudent{
-		{id: student100AID, departmentID: departmentAID, programmeID: programmeAID, matric: "MAT100A", email: "student-100a@attendance.test", name: "Alex Demo", userID: studentUserID, password: "DemoStudent-2026!", level: 100, claimed: true},
-		{id: student200AID, departmentID: departmentAID, programmeID: programmeAID, matric: "MAT200A", email: "student-200a@attendance.test", name: "Bailey Demo", level: 200},
-		{id: student100BID, departmentID: departmentBID, programmeID: programmeBID, matric: "MAT100B", email: "student-100b@attendance.test", name: "Casey Demo", level: 100},
-		{id: student200BID, departmentID: departmentBID, programmeID: programmeBID, matric: "MAT200B", email: "student-200b@attendance.test", name: "Drew Demo", level: 200},
+func (plan seedPlan) validate() error {
+	if len(plan.faculties) != 2 || len(plan.departments) != 4 || len(plan.programmes) != 4 ||
+		len(plan.courses) < 8 || len(plan.courses) > 12 || len(plan.offerings) < 10 ||
+		len(plan.students) < 30 || len(plan.students) > 50 || len(plan.venues) < 3 {
+		return errors.New("demo seed plan has an invalid organization, course, offering, student, or venue count")
 	}
-	students := append([]demoStudent(nil), legacy...)
-	counts := map[string]int{departmentAID: 2, departmentBID: 2}
-	for _, department := range demoDepartments {
-		for counts[department.id] < 10 {
-			studentIndex := len(students)
-			level := []int{100, 200, 300, 400}[counts[department.id]%4]
-			claimedLimit := 2
-			if department.id == departmentAID {
-				claimedLimit = 3
-			} else if department.id == departmentBID {
-				claimedLimit = 4
-			}
-			claimed := counts[department.id] < claimedLimit
-			student := demoStudent{
-				id: demoUUID(1000 + studentIndex), departmentID: department.id, programmeID: department.programmeID,
-				matric: fmt.Sprintf("DEMO-%s-%03d", department.code, counts[department.id]+1),
-				email:  fmt.Sprintf("student-%s-%02d@attendance.test", strings.ToLower(department.code), counts[department.id]+1),
-				name:   fmt.Sprintf("%s Demo Student %02d", department.code, counts[department.id]+1),
-				level:  level, claimed: claimed,
-			}
-			if claimed {
-				student.userID = demoUUID(2000 + studentIndex)
-				student.password = fmt.Sprintf("DemoStudent-%02d-2026!", studentIndex)
-			}
-			students = append(students, student)
-			counts[department.id]++
+	modes := make(map[string]bool)
+	for _, offering := range plan.offerings {
+		modes[offering.mode] = true
+		if offering.lecturerID == "" {
+			return errors.New("every demo offering must have an assigned lecturer")
 		}
-	}
-	return students
-}
-
-func makeDemoCredentials() []demoCredential {
-	credentials := []demoCredential{
-		{"Platform administrator", platformAdminID, "platform-admin@attendance.test", "DemoPlatform-2026!", "platform_admin", "platform", "", ""},
-		{"Institution administrator", adminID, "admin@attendance.test", "DemoAdmin-2026!", "institution_admin", "institution", "", ""},
-		{"Engineering faculty administrator", facultyAdminID, "faculty-admin@attendance.test", "DemoFaculty-2026!", "faculty_admin", "faculty", facultyID, ""},
-		{"Computing and Business faculty administrator", facultyAdminBID, "faculty-admin-cb@attendance.test", "DemoFacultyCB-2026!", "faculty_admin", "faculty", facultyBID, ""},
-		{"ECE department administrator", deptAdminAID, "dept-a@attendance.test", "DemoDeptA-2026!", "department_admin", "department", "", departmentAID},
-		{"Mechanical department administrator", deptAdminBID, "dept-b@attendance.test", "DemoDeptB-2026!", "department_admin", "department", "", departmentBID},
-		{"Computer Science department administrator", deptAdminCID, "dept-c@attendance.test", "DemoDeptC-2026!", "department_admin", "department", "", departmentCID},
-		{"Business department administrator", deptAdminDID, "dept-d@attendance.test", "DemoDeptD-2026!", "department_admin", "department", "", departmentDID},
-	}
-	for _, lecturer := range lecturers() {
-		credentials = append(credentials, demoCredential{
-			lecturer.name, lecturer.userID, lecturer.email, lecturer.password,
-			"lecturer", "department", "", lecturer.departmentID,
-		})
-	}
-	for _, student := range demoStudents() {
-		if student.claimed {
-			credentials = append(credentials, demoCredential{
-				"Claimed student " + student.matric, student.userID, student.email, student.password,
-				"student", "department", "", student.departmentID,
-			})
-		}
-	}
-	return credentials
-}
-
-type lecturerFixture struct {
-	userID, email, password, name, departmentID, staffNo string
-}
-
-func lecturers() []lecturerFixture {
-	return []lecturerFixture{
-		{lecturerAID, "lecturer-a@attendance.test", "DemoLecturerA-2026!", "Lecturer A", departmentAID, "STAFF-ECE-01"},
-		{lecturerBID, "lecturer-b@attendance.test", "DemoLecturerB-2026!", "Lecturer B", departmentBID, "STAFF-ME-01"},
-		{lecturerCID, "lecturer-c@attendance.test", "DemoLecturerC-2026!", "Lecturer C", departmentCID, "STAFF-CSC-01"},
-		{lecturerDID, "lecturer-d@attendance.test", "DemoLecturerD-2026!", "Lecturer D", departmentDID, "STAFF-BUS-01"},
-	}
-}
-
-func academicPeriod(now time.Time) (time.Time, time.Time, time.Time, time.Time) {
-	year := now.UTC().Year()
-	if now.UTC().Month() < time.September {
-		year--
-	}
-	start := time.Date(year, time.September, 1, 0, 0, 0, 0, time.UTC)
-	end := time.Date(year+1, time.August, 31, 0, 0, 0, 0, time.UTC)
-	if now.UTC().Month() >= time.September || now.UTC().Month() == time.January {
-		return start, end, start, time.Date(year+1, time.January, 31, 0, 0, 0, 0, time.UTC)
-	}
-	semesterStart := time.Date(year+1, time.February, 1, 0, 0, 0, 0, time.UTC)
-	semesterEnd := end
-	return start, end, semesterStart, semesterEnd
-}
-
-func weeklyAssignments(now time.Time) []teachingAssignment {
-	assignments := make([]teachingAssignment, 0, len(demoCourses))
-	for index, course := range demoCourses {
-		dayOffset := index - 1
-		if dayOffset < 0 {
-			dayOffset = 0
-		}
-		date := now.UTC().AddDate(0, 0, dayOffset)
-		start := time.Date(date.Year(), date.Month(), date.Day(), 9+index%6, 0, 0, 0, time.UTC)
-		end := start.Add(time.Hour)
-		if index == 0 {
-			start = now.UTC().Add(-15 * time.Minute)
-			end = now.UTC().Add(45 * time.Minute)
-		} else if index == 1 {
-			start = now.UTC().Add(2 * time.Hour)
-			end = start.Add(time.Hour)
-		}
-		if start.Day() != now.UTC().Day() && index == 0 {
-			start = time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		}
-		if end.Day() != now.UTC().Day() && index < 2 {
-			end = time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 23, 59, 0, 0, time.UTC)
-		}
-		assignments = append(assignments, teachingAssignment{
-			timetableID: demoUUID(3000 + index), offeringID: course.offeringID, venueID: course.venueID,
-			weekday: int(date.Weekday()), startsAt: start.Format("15:04"), endsAt: end.Format("15:04"),
-		})
-	}
-	return assignments
-}
-
-func assignmentsTimetableID(index int) string {
-	if index == 0 {
-		return timetable100ID
-	}
-	if index == 1 {
-		return timetable200ID
-	}
-	return demoUUID(3000 + index)
-}
-
-func demoPlan() seedPlan {
-	courses := map[string]bool{}
-	levels := map[int]bool{}
-	modes := map[string]bool{}
-	for _, course := range demoCourses {
-		courses[course.id] = true
-		levels[course.level] = true
-		modes[course.mode] = true
-	}
-	claimed := 0
-	for _, student := range demoStudents() {
-		levels[student.level] = true
-		if student.claimed {
-			claimed++
-		}
-	}
-	return seedPlan{
-		departments: len(demoDepartments), faculties: len(demoFaculties), programmes: len(demoDepartments),
-		courses: len(courses), offerings: len(demoCourses), students: len(demoStudents()),
-		claimedStudents: claimed, registrationModes: modes, levels: levels,
-	}
-}
-
-type seedPlan struct {
-	departments, faculties, programmes, courses, offerings, students, claimedStudents int
-	registrationModes                                                                 map[string]bool
-	levels                                                                            map[int]bool
-}
-
-func (p seedPlan) validate() error {
-	if p.faculties != 2 || p.departments != 4 || p.programmes != 4 || p.courses < 10 ||
-		p.offerings < 10 || p.students < 30 || p.students > 50 || p.claimedStudents == 0 ||
-		p.claimedStudents >= p.students {
-		return errors.New("demo seed must include two faculties, four departments/programmes, ten courses, and 30-50 students with claimed and unclaimed records")
 	}
 	for _, mode := range []string{"auto", "open", "approval", "closed"} {
-		if !p.registrationModes[mode] {
-			return fmt.Errorf("demo seed is missing registration mode %q", mode)
+		if !modes[mode] {
+			return fmt.Errorf("demo seed plan is missing the %s registration mode", mode)
 		}
 	}
-	for _, level := range []int{100, 200, 300, 400} {
-		if !p.levels[level] {
-			return fmt.Errorf("demo seed is missing level %d", level)
+	if len(plan.users) < 15 || len(plan.sessions) < 8 {
+		return errors.New("demo seed plan must include role accounts and live/historical sessions")
+	}
+	claimed, unclaimed := 0, 0
+	for _, student := range plan.students {
+		if student.userID == "" {
+			unclaimed++
+			continue
+		}
+		claimed++
+	}
+	if claimed < 8 || unclaimed < 20 {
+		return errors.New("demo seed plan must include claimed and unclaimed student records")
+	}
+	openVenues := map[string]bool{}
+	for _, session := range plan.sessions {
+		if session.endedAt == nil {
+			if openVenues[session.venueID] {
+				return errors.New("demo seed plan has more than one open session at a venue")
+			}
+			openVenues[session.venueID] = true
+		}
+	}
+	if len(openVenues) < 2 {
+		return errors.New("demo seed plan must include live sessions at two venues")
+	}
+	for _, registration := range plan.registrations {
+		if registration.status != "approved" && registration.status != "pending" {
+			return fmt.Errorf("invalid demo registration status %q", registration.status)
+		}
+	}
+	for _, timetable := range plan.timetables {
+		start, err := time.Parse("15:04:05", timetable.startsAt)
+		if err != nil {
+			return fmt.Errorf("invalid start time in demo timetable %s: %w", timetable.id, err)
+		}
+		end, err := time.Parse("15:04:05", timetable.endsAt)
+		if err != nil {
+			return fmt.Errorf("invalid end time in demo timetable %s: %w", timetable.id, err)
+		}
+		if !end.After(start) {
+			return fmt.Errorf("demo timetable %s ends before it starts", timetable.id)
 		}
 	}
 	return nil
 }
 
-func printCredentials(credentials []demoCredential) {
-	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "CAMPUS ATTENDANCE DEMO LOGINS (development only)")
-	fmt.Fprintln(writer, "Role\tAccount\tEmail\tPassword")
-	fmt.Fprintln(writer, "----\t-------\t-----\t--------")
-	for _, credential := range credentials {
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", credential.role, credential.label, credential.email, credential.password)
+func printCredentials(users []seedUser, students []seedStudent) {
+	writer := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "Role\tScope\tName\tEmail\tPassword")
+	for _, user := range users {
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+			user.role, user.scopeType, user.label, user.email, user.password)
 	}
 	_ = writer.Flush()
-	fmt.Println("\nInstitution ID:", institutionID)
-	fmt.Println("Claimed students have accounts; every unclaimed record can be claimed with its matric/email pair.")
-}
-
-func printUnclaimedStudents() {
-	fmt.Println("\nUNCLAIMED STUDENT RECORDS (matric number / institution email)")
-	for _, student := range demoStudents() {
-		if !student.claimed {
-			fmt.Printf("%s\t%s\n", student.matric, student.email)
+	fmt.Println("\nUnclaimed student records (matric / email):")
+	for _, student := range students {
+		if student.userID == "" {
+			fmt.Printf("  %s / %s\n", student.matric, student.email)
 		}
 	}
+	fmt.Println("\nInstitution ID:", institutionID)
+	fmt.Println("Use the printed institution ID with every login.")
 }
 
-func demoUUID(value int) string {
-	return fmt.Sprintf("10000000-0000-4000-8000-%012x", value)
+func printVenueConfiguration(plan seedPlan) {
+	fmt.Printf("\nSeed venue origin: latitude %.7f, longitude %.7f (radius %d m)\n",
+		plan.config.originLatitude, plan.config.originLongitude, plan.config.venueRadius)
+	for _, venue := range plan.venues {
+		fmt.Printf("  %s: latitude %.7f, longitude %.7f, radius %d m\n",
+			venue.name, venue.lat, venue.lng, venue.radius)
+	}
+	if !plan.config.originConfigured {
+		fmt.Println("WARNING: No SEED_ORIGIN_LAT/SEED_ORIGIN_LNG configured. Check-ins from your real location will be rejected with outside_radius until both are set.")
+	}
+	fmt.Println("Set SEED_ORIGIN_LAT and SEED_ORIGIN_LNG (and optionally SEED_VENUE_RADIUS_M) in .env, then run `go run ./scripts/seed --update-venues` or `docker compose run --rm seed seed --update-venues` to update venues and open-session snapshots.")
 }
 
-func demoStudentInDepartment(departmentID string, level int, skipID string) demoStudent {
-	for _, student := range demoStudents() {
-		if student.departmentID == departmentID && student.level == level && student.id != skipID {
+func seedID(value int) string {
+	return fmt.Sprintf("10000000-0000-4000-8000-%012d", value)
+}
+
+func studentIndex(students []seedStudent, id string) int {
+	for index, student := range students {
+		if student.id == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func departmentIDs(departments []seedDepartment) []string {
+	items := make([]string, 0, len(departments))
+	for _, department := range departments {
+		items = append(items, department.id)
+	}
+	return items
+}
+
+func offeringByID(offerings []seedOffering, id string) seedOffering {
+	for _, offering := range offerings {
+		if offering.id == id {
+			return offering
+		}
+	}
+	return seedOffering{}
+}
+
+func offeringIndex(offerings []seedOffering, id string) int {
+	for index, offering := range offerings {
+		if offering.id == id {
+			return index
+		}
+	}
+	return 0
+}
+
+func courseByID(courses []seedCourse, id string) seedCourse {
+	for _, course := range courses {
+		if course.id == id {
+			return course
+		}
+	}
+	return seedCourse{}
+}
+
+func venueByID(venues []seedVenue, id string) seedVenue {
+	for _, venue := range venues {
+		if venue.id == id {
+			return venue
+		}
+	}
+	return seedVenue{}
+}
+
+func sessionByID(sessions []seedSession, id string) seedSession {
+	for _, session := range sessions {
+		if session.id == id {
+			return session
+		}
+	}
+	return seedSession{}
+}
+
+func firstStudent(students []seedStudent) seedStudent {
+	for _, student := range students {
+		if student.userID != "" {
 			return student
 		}
 	}
-	return demoStudent{}
+	return students[0]
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
