@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -165,7 +166,16 @@ func (s *Store) List(ctx context.Context, institutionID, userID, studentID strin
 		return nil, fmt.Errorf("list %s: %w", resource, err)
 	}
 	defer rows.Close()
-	return collectRows(rows)
+	items, err := collectRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if resource == catalogue.Offerings {
+		if err := s.addOfferingAvailability(ctx, tenant, items); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 func (s *Store) ListVenues(ctx context.Context, institutionIDText, userIDText string, limit, offset int) ([]map[string]any, int64, error) {
@@ -186,22 +196,50 @@ func (s *Store) ListVenues(ctx context.Context, institutionIDText, userIDText st
 	if !allowed {
 		return nil, 0, catalogue.ErrForbidden
 	}
-	total, err := s.queries.CountVenues(ctx, institutionID)
+	scope := `v.institution_id=$1 AND (
+		EXISTS(SELECT 1 FROM role_assignments ra WHERE ra.institution_id=$1 AND ra.user_id=$2
+			AND ((ra.role='lecturer' AND v.active) OR ra.role='platform_admin'))
+		OR (v.department_id IS NULL AND EXISTS(SELECT 1 FROM role_assignments ra
+			WHERE ra.institution_id=$1 AND ra.user_id=$2 AND ra.role='institution_admin' AND ra.scope_type='institution'))
+		OR EXISTS(SELECT 1 FROM departments d JOIN role_assignments ra ON ra.institution_id=d.institution_id
+			WHERE d.institution_id=v.institution_id AND d.id=v.department_id AND ra.institution_id=$1 AND ra.user_id=$2
+			AND ((ra.role='institution_admin' AND ra.scope_type='institution')
+				OR (ra.role='faculty_admin' AND ra.scope_type='faculty' AND ra.faculty_id=d.faculty_id)
+				OR (ra.role='department_admin' AND ra.scope_type='department' AND ra.department_id=d.id)))
+	)`
+	var total int64
+	err = s.pool.QueryRow(ctx, "SELECT count(*) FROM venues v WHERE "+scope, institutionID, userID).Scan(&total)
 	if err != nil {
-		return nil, 0, fmt.Errorf("count institution venues: %w", err)
+		return nil, 0, fmt.Errorf("count scoped institution venues: %w", err)
 	}
-	rows, err := s.queries.ListVenues(ctx, dbgen.ListVenuesParams{
-		InstitutionID: institutionID, Limit: int32(limit), Offset: int32(offset),
-	})
+	rows, err := s.pool.Query(ctx, `SELECT v.id::text,v.name,v.latitude,v.longitude,v.radius_meters,v.department_id::text,v.active
+		FROM venues v WHERE `+scope+` ORDER BY v.name,v.id LIMIT $3 OFFSET $4`,
+		institutionID, userID, limit, offset)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list institution venues: %w", err)
+		return nil, 0, fmt.Errorf("list scoped institution venues: %w", err)
 	}
-	items := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
+	defer rows.Close()
+	items := make([]map[string]any, 0, limit)
+	for rows.Next() {
+		var id, name string
+		var latitude, longitude float64
+		var radius int32
+		var department pgtype.Text
+		var active bool
+		if err := rows.Scan(&id, &name, &latitude, &longitude, &radius, &department, &active); err != nil {
+			return nil, 0, fmt.Errorf("scan institution venue: %w", err)
+		}
+		var departmentID any
+		if department.Valid {
+			departmentID = department.String
+		}
 		items = append(items, map[string]any{
-			"id": row.ID.String(), "name": row.Name, "latitude": row.Latitude,
-			"longitude": row.Longitude, "radius_meters": row.RadiusMeters,
+			"id": id, "name": name, "latitude": latitude,
+			"longitude": longitude, "radius_meters": radius, "department_id": departmentID, "active": active,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("read scoped institution venues: %w", err)
 	}
 	return items, total, nil
 }
@@ -508,7 +546,7 @@ func listOrder(resource catalogue.Resource) string {
 	}
 }
 
-func (s *Store) Create(ctx context.Context, institutionID, _ string, resource catalogue.Resource, fields map[string]any) (map[string]any, error) {
+func (s *Store) Create(ctx context.Context, institutionID, actorID string, resource catalogue.Resource, fields map[string]any) (map[string]any, error) {
 	config, ok := resources[resource]
 	if !ok {
 		return nil, catalogue.ErrInvalidRequest
@@ -530,6 +568,28 @@ func (s *Store) Create(ctx context.Context, institutionID, _ string, resource ca
 	}
 	query := "INSERT INTO " + config.table + " (" + strings.Join(columns, ",") + ") VALUES (" +
 		strings.Join(placeholders, ",") + ") RETURNING " + strings.Join(config.columns, ",")
+	if academicResource(resource) {
+		actor, err := db.ParseUUID(actorID)
+		if err != nil {
+			return nil, err
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin academic resource creation: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		result, err := scanRow(tx.QueryRow(ctx, query, args...), config.columns)
+		if err != nil {
+			return nil, fmt.Errorf("create %s: %w", resource, err)
+		}
+		if err := auditAcademicResource(ctx, tx, tenant, actor, resource, "created", result["id"], fields); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit academic resource creation: %w", err)
+		}
+		return result, nil
+	}
 	row := s.pool.QueryRow(ctx, query, args...)
 	result, err := scanRow(row, config.columns)
 	if err != nil {
@@ -538,7 +598,7 @@ func (s *Store) Create(ctx context.Context, institutionID, _ string, resource ca
 	return result, nil
 }
 
-func (s *Store) Update(ctx context.Context, institutionID, _ string, resource catalogue.Resource, id string, fields map[string]any) (map[string]any, error) {
+func (s *Store) Update(ctx context.Context, institutionID, actorID string, resource catalogue.Resource, id string, fields map[string]any) (map[string]any, error) {
 	config, ok := resources[resource]
 	if !ok {
 		return nil, catalogue.ErrInvalidRequest
@@ -564,6 +624,68 @@ func (s *Store) Update(ctx context.Context, institutionID, _ string, resource ca
 	}
 	query := "UPDATE " + config.table + " SET " + strings.Join(sets, ",") +
 		" WHERE " + where + " RETURNING " + strings.Join(config.columns, ",")
+	if academicResource(resource) {
+		actor, err := db.ParseUUID(actorID)
+		if err != nil {
+			return nil, err
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin academic resource update: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		if resource == catalogue.AcademicSessions && fields["current"] == true {
+			if _, err := tx.Exec(ctx, `UPDATE academic_sessions SET current=false
+				WHERE institution_id=$1 AND current=true AND id<>$2`, tenant, itemID); err != nil {
+				return nil, fmt.Errorf("clear previous current academic session: %w", err)
+			}
+		}
+		result, err := scanRow(tx.QueryRow(ctx, query, args...), config.columns)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, catalogue.ErrNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("update %s: %w", resource, err)
+		}
+		if err := auditAcademicResource(ctx, tx, tenant, actor, resource, "updated", itemID, fields); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit academic resource update: %w", err)
+		}
+		return result, nil
+	}
+	if resource == catalogue.Offerings {
+		actor, err := db.ParseUUID(actorID)
+		if err != nil {
+			return nil, err
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin offering update: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		result, err := scanRow(tx.QueryRow(ctx, query, args...), config.columns)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, catalogue.ErrNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("update offering: %w", err)
+		}
+		details, err := json.Marshal(fields)
+		if err != nil {
+			return nil, fmt.Errorf("encode offering update audit: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
+			VALUES ($1,$2,'offering.updated','course_offering',$3,jsonb_build_object('fields',$4::jsonb))`,
+			tenant, actor, itemID, details); err != nil {
+			return nil, fmt.Errorf("audit offering update: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit offering update: %w", err)
+		}
+		return result, nil
+	}
 	result, err := scanRow(s.pool.QueryRow(ctx, query, args...), config.columns)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, catalogue.ErrNotFound
@@ -574,7 +696,7 @@ func (s *Store) Update(ctx context.Context, institutionID, _ string, resource ca
 	return result, nil
 }
 
-func (s *Store) Delete(ctx context.Context, institutionID, _ string, resource catalogue.Resource, id string) error {
+func (s *Store) Delete(ctx context.Context, institutionID, actorID string, resource catalogue.Resource, id string) error {
 	config, ok := resources[resource]
 	if !ok {
 		return catalogue.ErrInvalidRequest
@@ -589,6 +711,57 @@ func (s *Store) Delete(ctx context.Context, institutionID, _ string, resource ca
 	itemID, err := db.ParseUUID(id)
 	if err != nil {
 		return catalogue.ErrNotFound
+	}
+	if resource == catalogue.Offerings {
+		actor, err := db.ParseUUID(actorID)
+		if err != nil {
+			return err
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin offering deletion: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		tag, err := tx.Exec(ctx, "DELETE FROM "+config.table+" WHERE institution_id=$1 AND id=$2", tenant, itemID)
+		if err != nil {
+			return fmt.Errorf("delete offering: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return catalogue.ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
+			VALUES ($1,$2,'offering.deleted','course_offering',$3,'{}'::jsonb)`, tenant, actor, itemID); err != nil {
+			return fmt.Errorf("audit offering deletion: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit offering deletion: %w", err)
+		}
+		return nil
+	}
+	if academicResource(resource) {
+		actor, err := db.ParseUUID(actorID)
+		if err != nil {
+			return err
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin academic resource deletion: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		tag, err := tx.Exec(ctx, "DELETE FROM "+config.table+" WHERE institution_id=$1 AND id=$2", tenant, itemID)
+		if err != nil {
+			return fmt.Errorf("delete %s: %w", resource, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return catalogue.ErrNotFound
+		}
+		if err := auditAcademicResource(ctx, tx, tenant, actor, resource, "deleted", itemID, nil); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit academic resource deletion: %w", err)
+		}
+		return nil
 	}
 	tag, err := s.pool.Exec(ctx, "DELETE FROM "+config.table+" WHERE institution_id=$1 AND id=$2", tenant, itemID)
 	if err != nil {
@@ -673,6 +846,7 @@ func (s *Store) CanReadOffering(ctx context.Context, institutionID, userID, offe
 	if err != nil || allowed {
 		return allowed, err
 	}
+
 	tenant, err := db.ParseUUID(institutionID)
 	if err != nil {
 		return false, err
@@ -703,6 +877,10 @@ func (s *Store) CanReadOffering(ctx context.Context, institutionID, userID, offe
 		return false, fmt.Errorf("check offering read access: %w", err)
 	}
 	return canRead, nil
+}
+
+func academicResource(resource catalogue.Resource) bool {
+	return resource == catalogue.AcademicSessions || resource == catalogue.Semesters
 }
 
 func (s *Store) resolveTarget(ctx context.Context, tenant pgtype.UUID, resource catalogue.Resource, id string, target *rbac.Target) error {

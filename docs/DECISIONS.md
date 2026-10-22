@@ -79,7 +79,8 @@ resolved.
 
 - Staff invitations expire after seven days and use a random 32-byte token;
   only its SHA-256 hash is stored. The plaintext token is delivered to the
-  invited email and is never returned to the inviter or written to logs.
+  invited email and is never returned to the inviter; development log delivery
+  deliberately prints the invitation link for local testing.
 - The acceptance request includes the institution ID so the token lookup and
   every related query remain tenant-scoped. The institution ID is also included
   in the invitation email.
@@ -90,7 +91,44 @@ resolved.
   capability.
 - Acceptance proves control of the invited mailbox; the new account is marked
   email-verified. User creation, role assignment, invitation consumption, and
-  the audit event are performed in one transaction.
+  the audit event are performed in one transaction. If an invitation matches
+  a staff record, that record is linked to the newly created user in the same
+  transaction.
+- Staff CSV imports use the student import's five-megabyte limit and
+  preview/revalidate/atomic-commit pattern. Each imported staff row creates a
+  lecturer invitation scoped to its department, and the staff record,
+  invitation, audit events, and queued email are committed together.
+- Invitation URLs, student verification codes, and password reset codes may
+  appear in the log-only mailer only when `APP_ENV=development`; non-development
+  environments require the configured delivery provider.
+
+## Password reset and email delivery
+
+- Password reset requests return the same acknowledgement whether or not an
+  enabled account exists. Reset codes are six digits, HMAC-hashed with the
+  server secret, expire after 15 minutes, and permit at most five failed
+  attempts. A successful reset consumes the code, clears forced password
+  change, revokes refresh tokens, and writes an audit event transactionally.
+- Email delivery is queued in `email_outbox`; the worker claims rows with
+  leases, sends via the configured `Mailer`, retries with bounded exponential
+  backoff, and marks a message failed after five attempts.
+
+## Signup review and administration
+
+- Unknown-matric signup requests carry the selected department so list and
+  review operations can be filtered to the request's department scope. Approval
+  requires the same department plus a programme, level, and display name;
+  creating the student record, changing request status, and writing the audit
+  row are one transaction.
+- Institution administrators assign faculty or department administrator
+  roles. Faculty administrators can assign department administrators only
+  inside their faculty; department administrators cannot grant administrator
+  roles.
+- Venue management is limited to the venue's department scope, except
+  institution administrators can manage institution-wide venues. Deactivation
+  is soft so existing sessions retain their snapshots and history. Academic
+  session/semester mutations are institution-scoped and audited; setting the
+  current academic session clears the prior one in the same transaction.
 
 ## Catalogue access
 

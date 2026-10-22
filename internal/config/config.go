@@ -21,6 +21,7 @@ type Config struct {
 	CookieSecure         bool
 	MailAPIKey           string
 	MailFrom             string
+	AppEnv               string
 	DeviceOfflineSeconds int
 }
 
@@ -33,6 +34,7 @@ func Load() (Config, error) {
 		CodeHMACSecret: []byte(strings.TrimSpace(os.Getenv("CODE_HMAC_SECRET"))),
 		MailAPIKey:     strings.TrimSpace(os.Getenv("MAIL_API_KEY")),
 		MailFrom:       strings.TrimSpace(os.Getenv("MAIL_FROM")),
+		AppEnv:         envOr("APP_ENV", "development"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
@@ -66,6 +68,12 @@ func Load() (Config, error) {
 	}
 	if cfg.MailAPIKey != "" && cfg.MailFrom == "" {
 		return Config{}, errors.New("MAIL_FROM is required when MAIL_API_KEY is configured")
+	}
+	if cfg.AppEnv != "development" && cfg.AppEnv != "test" && cfg.AppEnv != "production" {
+		return Config{}, errors.New("APP_ENV must be development, test, or production")
+	}
+	if cfg.MailAPIKey == "" && cfg.AppEnv != "development" {
+		return Config{}, errors.New("MAIL_API_KEY is required outside development")
 	}
 	deviceOfflineSeconds, err := strconv.Atoi(envOr("DEVICE_OFFLINE_SECONDS", "60"))
 	if err != nil || deviceOfflineSeconds <= 0 {

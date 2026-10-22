@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/mail"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,7 @@ type InvitationService struct {
 	clock      Clock
 	random     io.Reader
 	randomMu   sync.Mutex
+	baseURL    string
 }
 
 func NewInvitationService(repository InvitationRepository, mailer notify.Mailer, clock Clock) (*InvitationService, error) {
@@ -56,6 +58,15 @@ func NewInvitationService(repository InvitationRepository, mailer notify.Mailer,
 		return nil, errors.New("invitation repository, mailer, and clock are required")
 	}
 	return &InvitationService{repository: repository, mailer: mailer, clock: clock, random: rand.Reader}, nil
+}
+
+func (s *InvitationService) SetBaseURL(baseURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("invitation base URL must be absolute")
+	}
+	s.baseURL = strings.TrimRight(baseURL, "/")
+	return nil
 }
 
 func (s *InvitationService) SetRandomSource(source io.Reader) error {
@@ -85,10 +96,16 @@ func (s *InvitationService) Create(ctx context.Context, issuer Identity, request
 	if err != nil {
 		return InvitationRecord{}, err
 	}
-	if err := s.mailer.Send(ctx, notify.Message{
+	acceptURL := s.baseURL + "/accept-invitation?institution_id=" +
+		url.QueryEscape(issuer.InstitutionID) + "&token=" + url.QueryEscape(token)
+	if s.baseURL == "" {
+		acceptURL = "/accept-invitation?institution_id=" + url.QueryEscape(issuer.InstitutionID) +
+			"&token=" + url.QueryEscape(token)
+	}
+	if err := s.mailer.Send(notify.ContextWithInstitution(ctx, issuer.InstitutionID), notify.Message{
 		To: request.Email, Subject: "Campus Attendance staff invitation",
-		Text: fmt.Sprintf("You have been invited to Campus Attendance. Institution ID: %s. Use this invitation token to create your account: %s. It expires on %s.",
-			issuer.InstitutionID, token, expiresAt.Format(time.RFC3339)),
+		Text: fmt.Sprintf("You have been invited to Campus Attendance. Institution ID: %s. Use this invitation token to create your account: %s. Open this invitation link: %s. It expires on %s.",
+			issuer.InstitutionID, token, acceptURL, expiresAt.Format(time.RFC3339)),
 	}); err != nil {
 		return InvitationRecord{}, fmt.Errorf("send staff invitation: %w", err)
 	}

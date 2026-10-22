@@ -150,15 +150,17 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    verification attempts return the same `400 invalid_verification` response.
 
    ```cmd
-   curl.exe -i -X POST http://localhost:8080/auth/signup-claim -H "Content-Type: application/json" --data "{\"institution_id\":\"INSTITUTION_UUID\",\"matric_no\":\"MATRIC_NO\",\"email\":\"EMAIL_ON_STUDENT_RECORD\"}"
+   curl.exe -i -X POST http://localhost:8080/auth/signup-claim -H "Content-Type: application/json" --data "{\"institution_id\":\"INSTITUTION_UUID\",\"matric_no\":\"MATRIC_NO\",\"email\":\"EMAIL_ON_STUDENT_RECORD\",\"department_id\":\"DEPARTMENT_UUID\"}"
    curl.exe -i -X POST http://localhost:8080/auth/verify-email -H "Content-Type: application/json" --data "{\"institution_id\":\"INSTITUTION_UUID\",\"matric_no\":\"MATRIC_NO\",\"code\":\"123456\",\"password\":\"a-long-new-password\"}"
    ```
 
    The first call returns `202 request_received`. The second returns `201`, an
-   access token, and the refresh cookie. The student department and level come
-   from the student record, not request fields. Eligible auto-mode offerings
+   access token, and the refresh cookie.    The required department identifies the review scope for unknown matric
+   requests. For a matching student record, the department and level still come
+   from that record, not request fields. Eligible auto-mode offerings
    are registered in the same transaction as the account claim. Admin review
-   routes for unknown matric requests are not yet available.
+   routes for unknown matric requests are described in the administrator
+   workflow below.
 
 5. **Invite a staff member.** As an institution admin, faculty admin, or
    department admin, invite a user only into a role/scope that you manage.
@@ -422,12 +424,88 @@ offering staff/coordinators can see the full offering roster.
 - Verify refresh-token rotation: reuse the old refresh cookie after a
   successful refresh and expect `401 invalid_refresh_token`.
 
-## Not yet available for manual verification
+## Staff and administrator workflows
+
+### Staff CSV import
+
+As a scoped administrator, prepare the exact header and rows below. Preview is
+read-only; commit revalidates every row and creates all records and invitation
+messages atomically.
+
+```cmd
+(echo staff_no,email,display_name,department_id& echo STAFF-001,lecturer@example.test,Alex Lecturer,DEPARTMENT_UUID)>staff.csv
+curl.exe -i -X POST http://localhost:8080/imports/staff/preview -H "Authorization: ******" -H "Content-Type: text/csv" --data-binary "@staff.csv"
+curl.exe -i -X POST http://localhost:8080/imports/staff -H "Authorization: ******" -H "Content-Type: text/csv" --data-binary "@staff.csv"
+```
+
+Invalid rows return `422` with their line/column errors and commit no data.
+Files over 5 MiB return `413`. A successful commit returns `201`; the invited
+lecturer receives an invitation link and can accept it through the public
+`POST /invitations/accept` flow documented earlier.
+
+### Signup request review
+
+An unknown matric claim must include the chosen department UUID. As an admin in
+that department or its parent faculty, list requests and approve with the
+student record details or reject without creating a record:
+
+```cmd
+curl.exe -i "http://localhost:8080/signup-requests?limit=50&offset=0" -H "Authorization: ******"
+curl.exe -i -X POST http://localhost:8080/signup-requests/SIGNUP_REQUEST_UUID/review -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"status\":\"approved\",\"department_id\":\"DEPARTMENT_UUID\",\"programme_id\":\"PROGRAMME_UUID\",\"level\":200,\"display_name\":\"Alex Student\"}"
+curl.exe -i -X POST http://localhost:8080/signup-requests/SIGNUP_REQUEST_UUID/review -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"status\":\"rejected\"}"
+```
+
+Approval requires a department, a programme in that department, level, and
+display name. The new student record and review audit entry are transactional;
+the student can then complete the existing email claim flow.
+
+### Password reset
+
+The forgot endpoint intentionally returns the same acknowledgement for known
+and unknown emails. In development, find the one-time code in the `development
+email` API log. Codes expire after 15 minutes and stop accepting attempts after
+five incorrect submissions:
+
+```cmd
+curl.exe -i -X POST http://localhost:8080/auth/password/forgot -H "Content-Type: application/json" --data "{\"institution_id\":\"INSTITUTION_UUID\",\"email\":\"USER_EMAIL\"}"
+curl.exe -i -X POST http://localhost:8080/auth/password/reset -H "Content-Type: application/json" --data "{\"institution_id\":\"INSTITUTION_UUID\",\"email\":\"USER_EMAIL\",\"code\":\"123456\",\"password\":\"a-long-new-password\"}"
+```
+
+On success, prior refresh tokens are revoked and the forced-password-change
+flag is cleared.
+
+### Venue, academic, and role administration
+
+Venue creation and edits are limited to a matching institution/faculty/
+department scope; department/faculty administrators should set `department_id`.
+Deactivation preserves historical sessions. Academic sessions and semesters
+are managed through their catalogue routes; changing `current` clears the
+previous current academic session in the same transaction. Institution admins
+assign faculty admins; institution or faculty admins assign department admins
+within their authorized scope:
+
+```cmd
+curl.exe -i -X POST http://localhost:8080/venues -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"name\":\"LT 2\",\"latitude\":6.5244,\"longitude\":3.3792,\"radius_meters\":150,\"department_id\":\"DEPARTMENT_UUID\"}"
+curl.exe -i -X PATCH http://localhost:8080/venues/VENUE_UUID -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"active\":false}"
+curl.exe -i -X PATCH http://localhost:8080/academic-sessions/SESSION_UUID -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"current\":true}"
+curl.exe -i -X POST http://localhost:8080/role-assignments -H "Authorization: ******" -H "Content-Type: application/json" --data "{\"user_id\":\"USER_UUID\",\"role\":\"department_admin\",\"scope_type\":\"department\",\"department_id\":\"DEPARTMENT_UUID\"}"
+```
+
+All these mutations write audit rows atomically.
+
+### Email outbox
+
+The API queues invitations, verification codes, and password reset codes in
+PostgreSQL. Its worker polls every 10 seconds; failed delivery retries with
+backoff and marks a message failed after five attempts. `APP_ENV=development`
+uses the log-only mailer, which prints invitation links and one-time codes to
+the API log. Non-development environments require `MAIL_API_KEY` and
+`MAIL_FROM`.
 
 Device key provisioning/rotation, department/offering percentage reports,
-below-threshold lists, disputes, and outbox processing remain incomplete.
-Import, seed, and catalogue flows require a migrated PostgreSQL database and
-have not been live-verified in this environment.
+below-threshold lists, disputes, and remaining hardening are still incomplete.
+These database-backed workflows have unit coverage but have not been
+live-verified in this environment.
 
 After those routes exist, also test expired tokens, oversized/malformed CSV,
 parallel check-in bursts, and migration rollback as described in

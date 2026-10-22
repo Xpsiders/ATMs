@@ -68,6 +68,32 @@ type RosterPage struct {
 	HasMore   bool            `json:"has_more"`
 }
 
+type LiveCounts struct {
+	WebCheckins int `json:"web_checkins"`
+	Scans       int `json:"scans"`
+	Registered  int `json:"registered"`
+}
+
+type LiveStudent struct {
+	StudentID      string         `json:"student_id"`
+	MatricNo       string         `json:"matric_no"`
+	DisplayName    string         `json:"display_name"`
+	Status         string         `json:"status"`
+	Classification Classification `json:"classification"`
+	OnRoster       bool           `json:"on_roster"`
+	HasWebCheckin  bool           `json:"has_web_checkin"`
+	HasScan        bool           `json:"has_scan"`
+}
+
+type LivePage struct {
+	SessionID string        `json:"session_id"`
+	Counts    LiveCounts    `json:"counts"`
+	Items     []LiveStudent `json:"items"`
+	Limit     int           `json:"limit"`
+	Offset    int           `json:"offset"`
+	HasMore   bool          `json:"has_more"`
+}
+
 type OverrideInput struct {
 	StudentIDs []string `json:"student_ids"`
 	Status     string   `json:"status"`
@@ -94,6 +120,10 @@ type ReportStore interface {
 	ReportRows(context.Context, string, string, string, string, int, int) ([]ReportRow, error)
 	RosterRows(context.Context, string, string, string, string, int, int) ([]RosterStudent, error)
 	SaveOverride(context.Context, string, string, string, string, string, string, string, string, time.Time) error
+}
+
+type LiveStore interface {
+	LiveCounts(context.Context, string, string, string, string) (LiveCounts, error)
 }
 
 type ReportRow struct {
@@ -339,4 +369,52 @@ func validReasonCode(code string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Service) LiveSession(ctx context.Context, institutionID, sessionID, userID string, filter ReportFilter) (LivePage, error) {
+	filter, err := normalizeFilter(filter)
+	if err != nil {
+		return LivePage{}, err
+	}
+	scope, err := s.authorize(ctx, institutionID, sessionID, userID, filter.DepartmentID)
+	if err != nil {
+		return LivePage{}, err
+	}
+	store, ok := s.store.(LiveStore)
+	if !ok {
+		return LivePage{}, errors.New("live session counts are not supported by this store")
+	}
+	counts, err := store.LiveCounts(ctx, institutionID, sessionID, scope.DepartmentFilter, scope.StudentFilter)
+	if err != nil {
+		return LivePage{}, fmt.Errorf("load live session counts: %w", err)
+	}
+	input, err := s.store.ScannerCoverageData(ctx, institutionID, sessionID, s.clock.Now().UTC(), s.offlineAfter)
+	if err != nil {
+		return LivePage{}, fmt.Errorf("load live session scanner coverage: %w", err)
+	}
+	coverage := ComputeScannerCoverage(input)
+	rows, err := s.store.ReportRows(ctx, institutionID, sessionID, scope.DepartmentFilter,
+		scope.StudentFilter, filter.Limit+1, filter.Offset)
+	if err != nil {
+		return LivePage{}, fmt.Errorf("load live session roster: %w", err)
+	}
+	hasMore := len(rows) > filter.Limit
+	if hasMore {
+		rows = rows[:filter.Limit]
+	}
+	items := make([]LiveStudent, 0, len(rows))
+	for _, row := range rows {
+		outcome := Classify(Record{
+			OnRoster: row.OnRoster, HasWebCheckin: row.HasWebCheckin, HasFingerprint: row.HasFingerprint,
+			ScannerAvailable: row.ScannerAvailable, OverrideStatus: row.OverrideStatus,
+			WebStatus: row.WebStatus, WebCheckinAt: row.WebCheckinAt, ScannerCoverage: coverage,
+		})
+		items = append(items, LiveStudent{
+			StudentID: row.StudentRecordID, MatricNo: row.MatricNo, DisplayName: row.DisplayName,
+			Status: outcome.Status, Classification: outcome.Classification, OnRoster: row.OnRoster,
+			HasWebCheckin: row.HasWebCheckin, HasScan: row.HasFingerprint,
+		})
+	}
+	return LivePage{SessionID: sessionID, Counts: counts, Items: items, Limit: filter.Limit,
+		Offset: filter.Offset, HasMore: hasMore}, nil
 }

@@ -43,6 +43,29 @@ type VenueListingStore interface {
 	ListVenues(context.Context, string, string, int, int) ([]map[string]any, int64, error)
 }
 
+type VenueManagementStore interface {
+	CreateVenue(context.Context, string, string, VenueInput) (map[string]any, error)
+	UpdateVenue(context.Context, string, string, string, VenueUpdate) (map[string]any, error)
+	DeactivateVenue(context.Context, string, string, string) error
+}
+
+type VenueInput struct {
+	Name         string  `json:"name" validate:"required,max=200"`
+	Latitude     float64 `json:"latitude" validate:"gte=-90,lte=90"`
+	Longitude    float64 `json:"longitude" validate:"gte=-180,lte=180"`
+	RadiusMeters int     `json:"radius_meters" validate:"required,min=1"`
+	DepartmentID string  `json:"department_id,omitempty" validate:"omitempty,uuid"`
+}
+
+type VenueUpdate struct {
+	Name         *string  `json:"name,omitempty" validate:"omitempty,max=200"`
+	Latitude     *float64 `json:"latitude,omitempty" validate:"omitempty,gte=-90,lte=90"`
+	Longitude    *float64 `json:"longitude,omitempty" validate:"omitempty,gte=-180,lte=180"`
+	RadiusMeters *int     `json:"radius_meters,omitempty" validate:"omitempty,min=1"`
+	DepartmentID *string  `json:"department_id,omitempty" validate:"omitempty,uuid"`
+	Active       *bool    `json:"active,omitempty"`
+}
+
 type VenuePage struct {
 	Items  []map[string]any `json:"items"`
 	Limit  int              `json:"limit"`
@@ -52,7 +75,7 @@ type VenuePage struct {
 
 type AutoTarget struct {
 	DepartmentID string `json:"department_id" validate:"required,uuid"`
-	Level        int    `json:"level" validate:"required,gte=1,lte=100"`
+	Level        int    `json:"level" validate:"required,gte=1,lte=1000"`
 }
 
 type Service struct {
@@ -96,6 +119,59 @@ func (s *Service) ListVenues(ctx context.Context, institutionID, userID string, 
 		items = []map[string]any{}
 	}
 	return VenuePage{Items: items, Limit: limit, Offset: offset, Total: total}, nil
+}
+
+func (s *Service) CreateVenue(ctx context.Context, institutionID, userID string, input VenueInput) (map[string]any, error) {
+	if institutionID == "" || userID == "" || strings.TrimSpace(input.Name) == "" ||
+		input.Latitude < -90 || input.Latitude > 90 || input.Longitude < -180 || input.Longitude > 180 ||
+		input.RadiusMeters < 1 {
+		return nil, ErrInvalidRequest
+	}
+	store, ok := s.store.(VenueManagementStore)
+	if !ok {
+		return nil, errors.New("venue management is not supported by this store")
+	}
+	input.Name = strings.TrimSpace(input.Name)
+	return store.CreateVenue(ctx, institutionID, userID, input)
+}
+
+func (s *Service) UpdateVenue(ctx context.Context, institutionID, userID, venueID string, update VenueUpdate) (map[string]any, error) {
+	if institutionID == "" || userID == "" || venueID == "" ||
+		(update.Name == nil && update.Latitude == nil && update.Longitude == nil &&
+			update.RadiusMeters == nil && update.DepartmentID == nil && update.Active == nil) {
+		return nil, ErrInvalidRequest
+	}
+	if update.Name != nil {
+		trimmed := strings.TrimSpace(*update.Name)
+		if trimmed == "" {
+			return nil, ErrInvalidRequest
+		}
+		update.Name = &trimmed
+	}
+	if update.Latitude != nil && (*update.Latitude < -90 || *update.Latitude > 90) ||
+		update.Longitude != nil && (*update.Longitude < -180 || *update.Longitude > 180) ||
+		update.RadiusMeters != nil && *update.RadiusMeters < 1 {
+		return nil, ErrInvalidRequest
+	}
+	if update.DepartmentID != nil && strings.TrimSpace(*update.DepartmentID) == "" {
+		return nil, ErrInvalidRequest
+	}
+	store, ok := s.store.(VenueManagementStore)
+	if !ok {
+		return nil, errors.New("venue management is not supported by this store")
+	}
+	return store.UpdateVenue(ctx, institutionID, userID, venueID, update)
+}
+
+func (s *Service) DeactivateVenue(ctx context.Context, institutionID, userID, venueID string) error {
+	if institutionID == "" || userID == "" || venueID == "" {
+		return ErrInvalidRequest
+	}
+	store, ok := s.store.(VenueManagementStore)
+	if !ok {
+		return errors.New("venue management is not supported by this store")
+	}
+	return store.DeactivateVenue(ctx, institutionID, userID, venueID)
 }
 
 func (s *Service) Create(ctx context.Context, institutionID, userID string, resource Resource, fields map[string]any) (map[string]any, error) {
@@ -183,7 +259,7 @@ func (s *Service) SetOfferingAutoTargets(ctx context.Context, institutionID, use
 	seen := map[string]struct{}{}
 	for _, target := range targets {
 		key := fmt.Sprintf("%s:%d", target.DepartmentID, target.Level)
-		if target.DepartmentID == "" || target.Level < 1 || target.Level > 100 {
+		if target.DepartmentID == "" || target.Level < 1 || target.Level > 1000 {
 			return ErrInvalidRequest
 		}
 		if _, ok := seen[key]; ok {

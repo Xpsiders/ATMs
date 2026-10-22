@@ -45,7 +45,7 @@ func (*registrationStore) List(context.Context, string, string, string, string, 
 func (*registrationStore) CanReview(context.Context, string, string, string, string) (bool, error) {
 	return false, nil
 }
-func (*registrationStore) Review(context.Context, string, string, string, string, time.Time) (string, error) {
+func (*registrationStore) Review(context.Context, string, string, string, string, string, time.Time) (string, error) {
 	return "", errors.New("unexpected review")
 }
 

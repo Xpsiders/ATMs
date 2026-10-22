@@ -12,13 +12,16 @@ import (
 )
 
 type fakeReportStore struct {
-	scope         reports.Scope
-	coverage      reports.ScannerCoverageInput
-	reportRows    []reports.ReportRow
-	rosterRows    []reports.RosterStudent
-	overrides     map[string]error
-	rosterFilter  string
-	studentFilter string
+	scope            reports.Scope
+	coverage         reports.ScannerCoverageInput
+	reportRows       []reports.ReportRow
+	rosterRows       []reports.RosterStudent
+	overrides        map[string]error
+	rosterFilter     string
+	studentFilter    string
+	reportDepartment string
+	liveCounts       reports.LiveCounts
+	countScope       string
 }
 
 func (f *fakeReportStore) SessionScope(context.Context, string, string, string) (reports.Scope, error) {
@@ -29,7 +32,8 @@ func (f *fakeReportStore) ScannerCoverageData(context.Context, string, string, t
 	return f.coverage, nil
 }
 
-func (f *fakeReportStore) ReportRows(_ context.Context, _, _, _, studentFilter string, limit, offset int) ([]reports.ReportRow, error) {
+func (f *fakeReportStore) ReportRows(_ context.Context, _, _, department, studentFilter string, limit, offset int) ([]reports.ReportRow, error) {
+	f.reportDepartment = department
 	f.studentFilter = studentFilter
 	if offset >= len(f.reportRows) {
 		return []reports.ReportRow{}, nil
@@ -39,6 +43,11 @@ func (f *fakeReportStore) ReportRows(_ context.Context, _, _, _, studentFilter s
 		end = len(f.reportRows)
 	}
 	return f.reportRows[offset:end], nil
+}
+
+func (f *fakeReportStore) LiveCounts(_ context.Context, _, _, department, student string) (reports.LiveCounts, error) {
+	f.countScope = department + ":" + student
+	return f.liveCounts, nil
 }
 
 func (f *fakeReportStore) RosterRows(_ context.Context, _, _, department, studentFilter string, limit, offset int) ([]reports.RosterStudent, error) {

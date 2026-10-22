@@ -405,7 +405,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PagedCatalogueItems"
+                $ref: "#/components/schemas/PagedMyOfferings"
         "400":
           description: Invalid limit or offset.
           content:
@@ -439,13 +439,15 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, name, latitude, longitude, radius_meters]
+                      required: [id, name, latitude, longitude, radius_meters, active]
                       properties:
                         id: {type: string, format: uuid}
                         name: {type: string}
                         latitude: {type: number}
                         longitude: {type: number}
                         radius_meters: {type: integer}
+                        active: {type: boolean}
+                        department_id: {type: string, format: uuid}
                   limit: {type: integer}
                   offset: {type: integer}
                   total: {type: integer}
@@ -465,6 +467,73 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createVenue
+      summary: Create an institution venue
+      description: Scoped institution, faculty, and department administrators can create venues within their authority.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, latitude, longitude, radius_meters]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 200}
+                latitude: {type: number, minimum: -90, maximum: 90}
+                longitude: {type: number, minimum: -180, maximum: 180}
+                radius_meters: {type: integer, minimum: 1}
+                department_id: {type: string, format: uuid}
+      responses:
+        "201": {description: Venue created., content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage venues., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /venues/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      operationId: updateVenue
+      summary: Update a venue
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, minLength: 1, maxLength: 200}
+                latitude: {type: number, minimum: -90, maximum: 90}
+                longitude: {type: number, minimum: -180, maximum: 180}
+                radius_meters: {type: integer, minimum: 1}
+                active: {type: boolean}
+                department_id: {type: string, format: uuid}
+      responses:
+        "200": {description: Venue updated., content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this venue., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Venue not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+    delete:
+      operationId: deactivateVenue
+      summary: Deactivate a venue without removing attendance history
+      security:
+        - BearerAuth: []
+      responses:
+        "204": {description: Venue deactivated.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this venue., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Venue not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
   /auth/refresh:
     post:
       operationId: refreshAccessToken
@@ -538,6 +607,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /auth/password/forgot:
+    post:
+      operationId: requestPasswordReset
+      summary: Request a password reset without revealing account existence
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [institution_id, email]
+              properties:
+                institution_id: {type: string, format: uuid}
+                email: {type: string, format: email}
+      responses:
+        "202": {description: A generic acknowledgement is returned for all valid requests., content: {application/json: {schema: {type: object, required: [status], properties: {status: {type: string, enum: [request_received]}}}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /auth/password/reset:
+    post:
+      operationId: resetPassword
+      summary: Reset a password using a one-time email code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [institution_id, email, code, new_password]
+              properties:
+                institution_id: {type: string, format: uuid}
+                email: {type: string, format: email}
+                code: {type: string, pattern: "^[0-9]{6}$"}
+                new_password: {type: string, format: password, minLength: 12, maxLength: 72}
+      responses:
+        "200": {description: Password reset and forced-change flag cleared.}
+        "400": {description: Request or reset code is invalid., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "429": {$ref: "#/components/responses/RateLimited"}
+        "500": {$ref: "#/components/responses/InternalError"}
         "500":
           $ref: "#/components/responses/InternalError"
   /auth/signup-claim:
@@ -551,7 +662,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [institution_id, matric_no, email]
+              required: [institution_id, matric_no, email, department_id]
               additionalProperties: false
               properties:
                 institution_id:
@@ -564,10 +675,14 @@ paths:
                   type: string
                   format: email
                   maxLength: 254
+                department_id:
+                  type: string
+                  format: uuid
             example:
               institution_id: 2f4e4ed0-490c-4cba-9343-62b0744d6ba7
               matric_no: MAT001
               email: student@example.test
+              department_id: 10000000-0000-4000-8000-000000000003
       responses:
         "202":
           description: Enumeration-safe acknowledgement. A verification email is sent only when the matric number and submitted email match an unclaimed record; otherwise an unknown-matric approval request is created or no action is taken.
@@ -588,8 +703,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
-        "429":
-          $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/InternalError"
   /auth/verify-email:
@@ -638,7 +751,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "429":
-          $ref: "#/components/responses/RateLimited"
+          description: Verification attempts are limited to five requests per minute per client IP.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
   /invitations:
@@ -856,6 +973,114 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
+  /imports/staff/preview:
+    post:
+      operationId: previewStaffImport
+      summary: Validate staff CSV rows without committing them
+      description: Headers are staff_no, email, display_name, and department_id. Lecturer invitations are created only during the atomic commit.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: {type: string, format: binary}
+      responses:
+        "200": {description: Parsed rows and row-level validation errors., content: {application/json: {schema: {$ref: "#/components/schemas/StaffImportPreview"}}}}
+        "400": {description: CSV structure is invalid., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "413": {description: CSV exceeds 5 MiB., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /imports/staff:
+    post:
+      operationId: commitStaffImport
+      summary: Atomically create staff records and lecturer invitations from CSV
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: {type: string, format: binary}
+      responses:
+        "201": {description: All validated staff rows and corresponding invitations were committed., content: {application/json: {schema: {$ref: "#/components/schemas/StaffImportPreview"}}}}
+        "400": {description: CSV structure is invalid., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "413": {description: CSV exceeds 5 MiB., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "409": {description: Import data changed after validation., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "422": {description: At least one row failed; no rows were committed., content: {application/json: {schema: {$ref: "#/components/schemas/StaffImportPreview"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /signup-requests:
+    get:
+      operationId: listSignupRequests
+      summary: List pending signup requests in the administrator's departments
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200": {description: Scoped pending signup requests., content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {type: object}}}}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot review signup requests., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /signup-requests/{id}/review:
+    post:
+      operationId: reviewSignupRequest
+      summary: Approve or reject a signup request
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [approved, rejected]}
+                department_id: {type: string, format: uuid}
+                level: {type: integer, minimum: 1}
+                programme_id: {type: string, format: uuid}
+                display_name: {type: string, minLength: 1, maxLength: 200}
+      responses:
+        "200": {description: Request reviewed; approval requires department_id, level, programme_id, and display_name, creates the student record, and writes an audit event.}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Request is outside caller department scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Request not found or no longer pending., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /role-assignments:
+    post:
+      operationId: createRoleAssignment
+      summary: Assign a department or faculty administrator role
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, role, scope_type]
+              properties:
+                user_id: {type: string, format: uuid}
+                role: {type: string, enum: [faculty_admin, department_admin]}
+                scope_type: {type: string, enum: [faculty, department]}
+                faculty_id: {type: string, format: uuid}
+                department_id: {type: string, format: uuid}
+      responses:
+        "201": {description: Scoped role assigned and audit event written.}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Requested role or scope is outside caller authority., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "409": {description: Role assignment already exists., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
         "500":
           $ref: "#/components/responses/InternalError"
   /checkins:
@@ -1091,6 +1316,196 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
+  /sessions/{id}/live:
+    get:
+      operationId: getLiveSessionRoster
+      summary: Get live attendance counts and a page of current roster status
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Current session counts and paginated roster; suitable for polling.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, counts, items, limit, offset, has_more]
+                properties:
+                  session_id: {type: string, format: uuid}
+                  counts:
+                    type: object
+                    required: [web_checkins, scans, registered]
+                    properties:
+                      web_checkins: {type: integer}
+                      scans: {type: integer}
+                      registered: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [student_id, matric_no, display_name, status, classification, on_roster, has_web_checkin, has_scan]
+                      properties:
+                        student_id: {type: string, format: uuid}
+                        matric_no: {type: string}
+                        display_name: {type: string}
+                        status: {type: string, enum: [present, late, absent, excused]}
+                        classification: {type: string, enum: [verified, suspected_proxy, present_no_web_log, web_only_unverified, absent, excused]}
+                        on_roster: {type: boolean}
+                        has_web_checkin: {type: boolean}
+                        has_scan: {type: boolean}
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  has_more: {type: boolean}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this session., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Session not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /offerings/{id}/timetable:
+    get:
+      operationId: listOfferingTimetable
+      summary: List timetable slots for an offering
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/ResourceId"}]
+      responses:
+        "200": {description: Timetable slots., content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/TimetableSlot"}}}}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot view this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+    post:
+      operationId: createOfferingTimetableSlot
+      summary: Create an offering timetable slot
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/ResourceId"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weekday, starts_at, ends_at, venue_id]
+              additionalProperties: false
+              properties:
+                weekday: {type: integer, minimum: 0, maximum: 6}
+                starts_at: {type: string, format: time}
+                ends_at: {type: string, format: time}
+                venue_id: {type: string, format: uuid}
+      responses:
+        "201": {description: Slot created., content: {application/json: {schema: {$ref: "#/components/schemas/TimetableSlot"}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "409": {description: Another slot overlaps at this venue., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /offerings/{id}/timetable/{slot_id}:
+    put:
+      operationId: updateOfferingTimetableSlot
+      summary: Update an offering timetable slot
+      security: [{BearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/ResourceId"}
+        - name: slot_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weekday, starts_at, ends_at, venue_id]
+              additionalProperties: false
+              properties:
+                weekday: {type: integer, minimum: 0, maximum: 6}
+                starts_at: {type: string, format: time}
+                ends_at: {type: string, format: time}
+                venue_id: {type: string, format: uuid}
+      responses:
+        "200": {description: Slot updated., content: {application/json: {schema: {$ref: "#/components/schemas/TimetableSlot"}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Slot not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "409": {description: Another slot overlaps at this venue., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+    delete:
+      operationId: deleteOfferingTimetableSlot
+      summary: Delete an offering timetable slot
+      security: [{BearerAuth: []}]
+      parameters:
+        - {$ref: "#/components/parameters/ResourceId"}
+        - name: slot_id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "204": {description: Slot deleted.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Slot not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /teaching-requests:
+    get:
+      operationId: listTeachingRequests
+      summary: List pending teaching requests visible to scoped administrators
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses:
+        "200": {description: Paginated pending teaching requests., content: {application/json: {schema: {type: object, required: [items, limit, offset, has_more], properties: {items: {type: array, items: {type: object, properties: {id: {type: string, format: uuid}, lecturer_id: {type: string, format: uuid}, lecturer_name: {type: string}, course_id: {type: string, format: uuid}, course_code: {type: string}, course_title: {type: string}, semester_id: {type: string, format: uuid}, registration_mode: {type: string}, roster_policy: {type: string}, min_attendance_pct: {type: number}, auto_targets: {type: array, items: {type: object, properties: {department_id: {type: string, format: uuid}, level: {type: integer}}}}, status: {type: string}, created_at: {type: string, format: date-time}}}}, limit: {type: integer}, offset: {type: integer}, has_more: {type: boolean}}}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot review requests in this scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /teaching-requests/{id}:
+    patch:
+      operationId: reviewTeachingRequest
+      summary: Approve or reject a pending teaching request
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/ResourceId"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              additionalProperties: false
+              properties: {status: {type: string, enum: [approved, rejected]}}
+      responses:
+        "200": {description: Request reviewed; approval creates the offering and assignment., content: {application/json: {schema: {type: object, properties: {id: {type: string, format: uuid}, status: {type: string}, offering_id: {type: string, format: uuid}}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot review this request., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Request not found or not pending., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /registration-approvals:
+    get:
+      operationId: listPendingRegistrationApprovals
+      summary: List pending registrations for offerings assigned to the lecturer or managed by scoped admins
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      responses:
+        "200": {description: Paginated pending approvals scoped to assigned offerings and caller-managed departments., content: {application/json: {schema: {type: object, required: [items, limit, offset, has_more], properties: {items: {type: array, items: {$ref: "#/components/schemas/RegistrationApproval"}}, limit: {type: integer}, offset: {type: integer}, has_more: {type: boolean}}}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot review registrations., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /offerings/{id}/registrations/bulk:
+    post:
+      operationId: bulkReviewOfferingRegistrations
+      summary: Approve or reject pending student registrations in bulk
+      security: [{BearerAuth: []}]
+      parameters: [{$ref: "#/components/parameters/ResourceId"}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [student_ids, status]
+              additionalProperties: false
+              properties:
+                student_ids: {type: array, minItems: 1, maxItems: 200, items: {type: string, format: uuid}}
+                status: {type: string, enum: [approved, rejected]}
+      responses:
+        "200": {description: Per-student results., content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {type: object, required: [student_id], properties: {student_id: {type: string, format: uuid}, status: {type: string}, error_code: {type: string}}}}}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot review registrations for this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
   /sessions/{id}/scanner-status:
     post:
       operationId: markSessionScannerUnavailable
@@ -1797,9 +2212,17 @@ paths:
   /courses:
     get:
       operationId: listCourses
-      summary: List courses
+      summary: List courses available to the authenticated user's scope
       security: [{BearerAuth: []}]
-      parameters: [{$ref: "#/components/parameters/Limit"}, {$ref: "#/components/parameters/Offset"}]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: department_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: kind
+          in: query
+          schema: {type: string, enum: [departmental, general]}
       responses:
         "200": {description: Paginated courses., content: {application/json: {schema: {$ref: "#/components/schemas/PagedCatalogueItems"}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
@@ -1878,11 +2301,39 @@ paths:
           application/json:
             schema:
               type: object
-              required: [course_id, semester_id, level, registration_mode]
+              required: [course_id, semester_id, level, registration_mode, roster_policy, min_attendance_pct]
               additionalProperties: false
-              properties: {course_id: {type: string, format: uuid}, semester_id: {type: string, format: uuid}, coordinator_user_id: {type: string, format: uuid}, level: {type: integer, minimum: 1}, registration_mode: {type: string, enum: [auto, open, approval, closed]}, roster_policy: {type: string, enum: [registered_only, open]}, min_attendance_pct: {type: number, minimum: 0, maximum: 100}, late_counts_as_attended: {type: boolean}}
+              properties:
+                course_id: {type: string, format: uuid}
+                semester_id: {type: string, format: uuid}
+                level: {type: integer, minimum: 1}
+                registration_mode: {type: string, enum: [auto, open, approval, closed]}
+                roster_policy: {type: string, enum: [registered_only, open]}
+                min_attendance_pct: {type: number, minimum: 0, maximum: 100}
+                late_counts_as_attended: {type: boolean}
+                auto_targets:
+                  type: array
+                  items:
+                    type: object
+                    required: [department_id, level]
+                    additionalProperties: false
+                    properties:
+                      department_id: {type: string, format: uuid}
+                      level: {type: integer, minimum: 1}
+                timetable:
+                  type: array
+                  items:
+                    type: object
+                    required: [weekday, starts_at, ends_at, venue_id]
+                    additionalProperties: false
+                    properties:
+                      weekday: {type: integer, minimum: 0, maximum: 6}
+                      starts_at: {type: string, format: time}
+                      ends_at: {type: string, format: time}
+                      venue_id: {type: string, format: uuid}
       responses:
         "201": {description: Offering created., content: {application/json: {schema: {$ref: "#/components/schemas/CatalogueItem"}}}}
+        "202": {description: Teaching request created because the course belongs to another department., content: {application/json: {schema: {type: object, required: [status, teaching_request_id], properties: {status: {type: string, enum: [pending]}, teaching_request_id: {type: string, format: uuid}}}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot create an offering for this course., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
@@ -2372,6 +2823,30 @@ components:
                 type: string
               message:
                 type: string
+    StaffImportPreview:
+      type: object
+      required: [rows, errors]
+      properties:
+        rows:
+          type: array
+          items:
+            type: object
+            required: [line, staff_no, email, display_name, department_id]
+            properties:
+              line: {type: integer}
+              staff_no: {type: string}
+              email: {type: string, format: email}
+              display_name: {type: string}
+              department_id: {type: string, format: uuid}
+        errors:
+          type: array
+          items:
+            type: object
+            required: [line, message]
+            properties:
+              line: {type: integer}
+              column: {type: string}
+              message: {type: string}
     AutoTarget:
       type: object
       required: [department_id, level]
@@ -2383,7 +2858,19 @@ components:
         level:
           type: integer
           minimum: 1
-          maximum: 100
+          maximum: 1000
+    TimetableSlot:
+      type: object
+      required: [id, offering_id, venue_id, weekday, starts_at, ends_at]
+      properties:
+        id: {type: string, format: uuid}
+        offering_id: {type: string, format: uuid}
+        venue_id: {type: string, format: uuid}
+        venue_name: {type: string}
+        weekday: {type: integer, minimum: 0, maximum: 6}
+        starts_at: {type: string, format: time}
+        ends_at: {type: string, format: time}
+        next_at: {type: string, format: date-time}
     PagedCatalogueItems:
       type: object
       required: [items, limit, offset, has_more]
@@ -2398,6 +2885,26 @@ components:
           type: integer
         has_more:
           type: boolean
+    PagedMyOfferings:
+      type: object
+      required: [items, limit, offset, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            allOf:
+              - $ref: "#/components/schemas/CatalogueItem"
+              - type: object
+                required: [session_open, next_timetable_slot]
+                properties:
+                  session_open: {type: boolean}
+                  next_timetable_slot:
+                    oneOf:
+                      - $ref: "#/components/schemas/TimetableSlot"
+                      - type: "null"
+        limit: {type: integer}
+        offset: {type: integer}
+        has_more: {type: boolean}
     PagedSearchOfferings:
       type: object
       required: [items, limit, offset, has_more]
@@ -2459,6 +2966,15 @@ components:
           format: date-time
         on_roster:
           type: boolean
+    RegistrationApproval:
+      allOf:
+        - $ref: "#/components/schemas/Registration"
+        - type: object
+          required: [offering_id, course_code, course_title]
+          properties:
+            offering_id: {type: string, format: uuid}
+            course_code: {type: string}
+            course_title: {type: string}
     RegistrationPage:
       type: object
       required: [items, limit, offset, has_more]
@@ -2894,7 +3410,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorEnvelope"
     RateLimited:
-      description: Device or IP rate limit exceeded.
+      description: Endpoint-specific request rate limit exceeded.
       content:
         application/json:
           schema:

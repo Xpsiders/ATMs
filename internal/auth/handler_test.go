@@ -229,7 +229,7 @@ func TestStudentClaimHandlerVerifiesAndIssuesRefreshCookie(t *testing.T) {
 	router := chi.NewRouter()
 	handler.RegisterRoutes(router)
 	start := httptest.NewRequest(http.MethodPost, "/auth/signup-claim", strings.NewReader(
-		`{"institution_id":"`+institutionID+`","matric_no":"MAT001","email":"record@example.test"}`,
+		`{"institution_id":"`+institutionID+`","matric_no":"MAT001","email":"record@example.test","department_id":"10000000-0000-4000-8000-000000000001"}`,
 	))
 	startResponse := httptest.NewRecorder()
 	router.ServeHTTP(startResponse, start)
@@ -256,7 +256,7 @@ func TestStudentClaimHandlerVerifiesAndIssuesRefreshCookie(t *testing.T) {
 		t.Fatal(err)
 	}
 	claims, err := tokens.ValidateAccess(response.AccessToken)
-	if err != nil || claims.StudentID != "record-1" || claims.DepartmentID != "department-locked" || claims.Level != 200 {
+	if err != nil || claims.StudentID != "record-1" || claims.DepartmentID != "10000000-0000-4000-8000-000000000001" || claims.Level != 200 {
 		t.Fatalf("claimed access token claims = %+v, %v", claims, err)
 	}
 }
@@ -280,7 +280,7 @@ func TestStudentClaimHandlerUnknownMatricRequestsApproval(t *testing.T) {
 	router := chi.NewRouter()
 	handler.RegisterRoutes(router)
 	request := httptest.NewRequest(http.MethodPost, "/auth/signup-claim", strings.NewReader(
-		`{"institution_id":"`+institutionID+`","matric_no":"UNKNOWN","email":"unknown@example.test"}`,
+		`{"institution_id":"`+institutionID+`","matric_no":"UNKNOWN","email":"unknown@example.test","department_id":"10000000-0000-4000-8000-000000000001"}`,
 	))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -288,6 +288,56 @@ func TestStudentClaimHandlerUnknownMatricRequestsApproval(t *testing.T) {
 		!strings.Contains(response.Body.String(), `"status":"request_received"`) ||
 		repository.requests != 1 {
 		t.Fatalf("unknown claim response = %d %s, requests=%d", response.Code, response.Body.String(), repository.requests)
+	}
+}
+
+func TestClaimRateLimitOnlyAppliesToEmailVerificationAttempts(t *testing.T) {
+	t.Parallel()
+	const institutionID = "2f4e4ed0-490c-4cba-9343-62b0744d6ba7"
+	clock := testutil.NewFakeClock(time.Unix(1_700_000_000, 0))
+	tokens, _ := newTestTokens(t, clock)
+	repository := newClaimRepository()
+	repository.record.InstitutionID = institutionID
+	service, err := auth.NewClaimService(repository, &testutil.MemoryMailer{}, clock,
+		[]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := auth.NewClaimHandler(service, tokens, false, http.SameSiteLaxMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	handler.RegisterRoutes(router)
+	for attempt := 0; attempt < 6; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/auth/signup-claim", strings.NewReader(
+			`{"institution_id":"`+institutionID+`","matric_no":"UNKNOWN","email":"unknown@example.test","department_id":"10000000-0000-4000-8000-000000000001"}`,
+		))
+		request.RemoteAddr = "192.0.2.77:1234"
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("signup-claim attempt %d returned %d, want no verification throttle", attempt+1, response.Code)
+		}
+	}
+	for attempt := 0; attempt < 6; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/auth/verify-email", strings.NewReader(
+			`{"institution_id":"`+institutionID+`","matric_no":"MAT001","code":"000000","password":"correct horse battery staple"}`,
+		))
+		request.RemoteAddr = "192.0.2.77:1234"
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		want := http.StatusBadRequest
+		if attempt == 5 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want {
+			t.Fatalf("verification attempt %d returned %d, want %d; body=%s",
+				attempt+1, response.Code, want, response.Body.String())
+		}
+		if attempt == 5 && !strings.Contains(response.Body.String(), `"code":"rate_limited"`) {
+			t.Fatalf("rate limited verification response = %s", response.Body.String())
+		}
 	}
 }
 
@@ -311,7 +361,7 @@ func TestStudentClaimStartDoesNotRevealRecordEligibility(t *testing.T) {
 	handler.RegisterRoutes(router)
 	start := func(matricNo, email string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodPost, "/auth/signup-claim", strings.NewReader(
-			`{"institution_id":"`+institutionID+`","matric_no":"`+matricNo+`","email":"`+email+`"}`,
+			`{"institution_id":"`+institutionID+`","matric_no":"`+matricNo+`","email":"`+email+`","department_id":"10000000-0000-4000-8000-000000000001"}`,
 		))
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, request)

@@ -175,11 +175,28 @@ func TestListVenuesReturnsTenantScopedPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	page, err := service.ListVenues(context.Background(), "inst", "lecturer", 5, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(page.Items) != 1 || page.Total != 7 || page.Limit != 5 || page.Offset != 10 {
 		t.Fatalf("unexpected venue page: %+v", page)
+	}
+}
+
+func TestVenueMutationValidationRejectsInvalidCoordinatesAndEmptyPatch(t *testing.T) {
+	t.Parallel()
+	service, err := catalogue.NewService(&fakeStore{allowed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateVenue(context.Background(), "inst", "user", catalogue.VenueInput{
+		Name: "Room", Latitude: 91, Longitude: 0, RadiusMeters: 100,
+	}); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("out-of-range venue create error = %v", err)
+	}
+	if _, err := service.UpdateVenue(context.Background(), "inst", "user", "venue", catalogue.VenueUpdate{}); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("empty venue update error = %v", err)
 	}
 }

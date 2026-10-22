@@ -457,7 +457,11 @@ INSERT INTO lecture_sessions (
     started_at, latitude, longitude, radius_meters, rotating_code, static_code,
     code_expires_at, late_after_min
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+WHERE EXISTS (
+    SELECT 1 FROM venues
+    WHERE institution_id = $1 AND id = $3 AND active = true
+)
 ON CONFLICT (institution_id, venue_id) WHERE ended_at IS NULL DO NOTHING
 RETURNING id, institution_id, offering_id, venue_id, started_at, ended_at,
           latitude, longitude, radius_meters, rotating_code, static_code,
@@ -494,16 +498,20 @@ VALUES ($1, $2, $3, $4, $5, $6, $7);
 -- name: GetVenueSettings :one
 SELECT latitude, longitude, radius_meters
 FROM venues
-WHERE institution_id = $1 AND id = $2;
+WHERE institution_id = $1 AND id = $2 AND active = true;
 
 -- name: IsTimetableForOfferingVenue :one
 SELECT EXISTS (
     SELECT 1
     FROM timetable
-    WHERE institution_id = $1
-      AND id = $2
-      AND offering_id = $3
-      AND venue_id = $4
+    JOIN venues AS venue
+      ON venue.institution_id = timetable.institution_id
+     AND venue.id = timetable.venue_id
+    WHERE timetable.institution_id = $1
+      AND timetable.id = $2
+      AND timetable.offering_id = $3
+      AND timetable.venue_id = $4
+      AND venue.active = true
 );
 
 -- name: CanManageOffering :one

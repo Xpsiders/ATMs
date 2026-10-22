@@ -17,6 +17,10 @@ type fakeRegistrationStore struct {
 	student       string
 	reviewAllowed bool
 	reviewStatus  string
+	pending       []registration.ApprovalRequest
+	pendingUser   string
+	pendingLimit  int
+	pendingOffset int
 }
 
 func (f *fakeRegistrationStore) RegistrationContext(context.Context, string, string, string) (registration.Context, error) {
@@ -45,9 +49,14 @@ func (f *fakeRegistrationStore) CanReview(context.Context, string, string, strin
 	return f.reviewAllowed, nil
 }
 
-func (f *fakeRegistrationStore) Review(_ context.Context, _, _, _, status string, _ time.Time) (string, error) {
+func (f *fakeRegistrationStore) Review(_ context.Context, _, _, _, _, status string, _ time.Time) (string, error) {
 	f.reviewStatus = status
 	return status, nil
+}
+
+func (f *fakeRegistrationStore) PendingApprovals(_ context.Context, _, user string, limit, offset int) ([]registration.ApprovalRequest, error) {
+	f.pendingUser, f.pendingLimit, f.pendingOffset = user, limit, offset
+	return f.pending, nil
 }
 
 func newRegistrationService(t *testing.T, store *fakeRegistrationStore) *registration.Service {

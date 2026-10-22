@@ -24,20 +24,20 @@ checklist, not a claim that database-backed behavior has been exercised.
 | Item | Status | Notes |
 |---|---|---|
 | Institution/faculty/department/programme schema and APIs | Partial | Catalogue APIs and resource-derived scope checks are implemented and unit-tested; database behavior and remaining endpoints require verification. |
-| Users, role assignments, student records and tenant constraints | Partial | Identity schema and tenant-aware queries exist; full schema/query audit remains. |
+| Users, role assignments, student records and tenant constraints | Partial | Identity schema and tenant-aware queries exist; faculty/department administrator assignment is scoped and audited; full schema/query audit remains. |
 | Login, bcrypt passwords, access JWT, refresh-token rotation/revocation | Partial | Login includes the current profile and scoped roles, and authenticated `GET /me` returns the same profile; token hardening and live DB verification remain. |
 | Verified student signup claim and one-time verification codes | Partial | Account creation follows one-time verification and locks department/level; start and verify responses now conceal record eligibility, with PostgreSQL verification and attempt-cap hardening outstanding. |
-| Unknown-matric signup approval requests and admin review | Partial | Request persistence exists; review API is absent. |
-| Invitations | Partial | Scoped staff invitations and acceptance are implemented with hashed one-time tokens, issuer scope checks, transactional role creation/audit, and unit tests; live PostgreSQL verification remains. |
-| Password reset | Not started | |
-| Student/staff CSV import and row validation | Partial | Student CSV parsing, scoped preview, atomic commit, row-level errors, size limits, and concurrent matric conflict handling are implemented and unit-tested; staff import remains absent and PostgreSQL behavior is unverified. |
+| Unknown-matric signup approval requests and admin review | Partial | Unknown requests are department-tagged; list/reject/approve routes enforce department/faculty/institution scope and approval transactionally creates the student record and audit event. Unit coverage is present; PostgreSQL behavior remains unverified. |
+| Invitations | Partial | Scoped staff invitations and acceptance use hashed one-time tokens; acceptance links imported staff records to users transactionally. Development-only logging includes invitation links; outbox delivery is wired. Live PostgreSQL verification remains. |
+| Password reset | Partial | Enumeration-safe forgot/reset routes use HMAC-hashed one-time codes, a persistent five-attempt cap, 15-minute expiry, forced-change clearing, refresh-token revocation, and transactional audit/outbox writes; database behavior remains unverified. |
+| Student/staff CSV import and row validation | Partial | Student and staff CSV parsing, scoped preview, atomic commit, row-level errors, and 5 MiB limits are implemented. Staff commit creates lecturer invitations and outbox rows atomically; student duplicate conflicts are handled. PostgreSQL behavior remains unverified. |
 | Authentication and identity unit tests | Partial | Unit tests cover login and `/me` profile/role JSON, including student department/level; the full identity requirement matrix remains incomplete. |
 
 ## Phase 2 — Academics, catalogue and registration
 
 | Item | Status | Notes |
 |---|---|---|
-| Academic sessions and semesters | Partial | Generic catalogue CRUD exists; full scope enforcement and API coverage remain. |
+| Academic sessions and semesters | Partial | Generic catalogue CRUD is institution-scoped; mutations are audited and setting `current` clears the prior current session transactionally. PostgreSQL behavior remains unverified. |
 | Courses, offerings, lecturer assignments and auto-registration targets | Partial | `GET /courses` supports department/kind filters. Lecturer `POST /offerings` creates same-department offerings with automatic assignment or queues cross-department teaching requests; scoped administrators can review them. Offering edits/deletes and timetable changes are audited; database verification remains. |
 | Full-text/trigram offering search and required filters/defaults | Partial | Search results include registration mode/state, course and department metadata, level, kind, and lecturers; PostgreSQL ranking and result query behavior are not live-tested. |
 | Registration modes and roster policy rules | Done | Pure rule logic and unit tests exist. |
@@ -49,7 +49,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 
 | Item | Status | Notes |
 |---|---|---|
-| Venues, devices, timetable schema and CRUD APIs | Partial | Tenant-scoped `GET /venues` and student-scoped `GET /me/timetable` are implemented. Offering timetable list/create/update/delete now checks assigned lecturers or scoped admins and rejects same-venue overlaps transactionally. Seed venues can be configured around an origin and updated with open-session snapshots without resetting data; unit coverage is added, while database behavior remains unverified. |
+| Venues, devices, timetable schema and CRUD APIs | Partial | Scoped venue create/update/deactivate and active, scope-filtered listing are audited; inactive venues are excluded from new session starts/timetable assignments. Student timetable and audited offering timetable CRUD remain implemented. Seed venues can be updated without resetting data; database behavior remains unverified. |
 | Session start/end and one-open-session-per-venue constraint | Partial | Session service/schema logic exists; PostgreSQL migration/constraint has not been exercised. |
 | Static and rotating codes, code retrieval | Partial | Pure code logic and routes exist; behavior is covered by unit tests. |
 | Web check-in, roster policy, geofence and duplicate handling | Partial | Service and unit tests exist; race-safe SQL and live DB behavior are unverified. |
@@ -75,9 +75,9 @@ checklist, not a claim that database-backed behavior has been exercised.
 | Offering/department aggregate attendance reports | Not started | |
 | Attendance percentages and below-threshold list | Partial | Student `GET /me/courses` uses the pure percentage math, counts late according to offering policy, and applies override status first; department aggregate endpoints remain absent and database behavior is unverified. |
 | CSV exports | Partial | Session report/roster export exists; aggregate exports remain. |
-| Audit logging for all role/attendance changes | Partial | Offering creation/update/delete, timetable changes, teaching request decisions, and registration reviews now write audit rows transactionally; role-change coverage and DB verification remain incomplete. |
+| Audit logging for all role/attendance changes | Partial | Offering/timetable changes, teaching request decisions, registration reviews, venue/academic mutations, role assignment, signup review, and password reset now write audit rows transactionally; PostgreSQL verification remains. |
 | Disputes | Not started | |
-| Email outbox worker | Not started | Mailer implementations exist; persistent outbox/worker is absent. |
+| Email outbox worker | Partial | Invitations, verification, staff-import, and reset messages enqueue in PostgreSQL; a leased batch worker retries delivery with backoff and the development-only mailer logs links/codes. Retry/concurrency behavior remains unverified against PostgreSQL. |
 
 ## Phase 6 — Hardening and delivery
 
@@ -87,7 +87,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 | JSON request limits, strict decoding and error envelope | Partial | Shared helpers exist; every handler must be checked for consistent use. |
 | CORS allowlist, request IDs and structured logs | Partial | Infrastructure exists; complete hardening verification remains. |
 | Optional phone/device binding | Not started | |
-| OpenAPI coverage and accurate schemas for all implemented endpoints | Partial | Added student-only `/me/courses`, `/me/timetable`, `/me/attendance`, and `/me/registrations`, plus detailed offering search results; many product routes remain uncovered. |
+| OpenAPI coverage and accurate schemas for all implemented endpoints | Partial | Contract now includes staff imports, signup review, password reset, venue management, role assignment, and department-scoped unknown-matric claims; many product routes remain uncovered. |
 | Demo seed loader and reproducible checklist | Partial | Date-relative repeatable seed now includes one institution, two faculties, four departments/programmes, ten courses/offerings across all registration modes, four lecturer accounts/staff records, 48 students (16 claimed), three venues/scanners, weekly timetable entries, two open and six historical sessions, registration states, varied attendance evidence/overrides, and pending invitation/signup/enrolment records. Login credentials and unclaimed matric/email pairs are printed; newly created scanner keys and invitation token are shown once. `--reset` recreates only the demo institution. Pure fixture tests pass; PostgreSQL execution remains unverified. |
 | Manual guide, testing gaps, architecture and decisions docs | Partial | Docs exist and are being updated with implemented workflows; full product checklist remains incomplete. |
 | README setup, deployment, frontend contract and Windows instructions | Partial | Setup, seed and frontend contract instructions exist; deployment guidance and full contract coverage remain. |
@@ -102,7 +102,7 @@ checklist, not a claim that database-backed behavior has been exercised.
 | Access-token lifetime, refresh cookie attributes, reuse rejection, forced password change | Partial | Core token functionality exists; full configuration and security matrix need verification. |
 | Rate-limit failures logged without leaking PII | Partial | Requires endpoint-by-endpoint review. |
 | Device authentication separated from user authentication | Done | Separate `X-Device-Key` middleware is wired. |
-| CSV import size limit, dry-run preview, row-level errors, commit | Partial | Student CSV preview/commit is implemented with scoped validation, 5 MiB limit, all-or-nothing writes, and conflict response; staff import and live DB verification remain. |
+| CSV import size limit, dry-run preview, row-level errors, commit | Partial | Student and staff CSV preview/commit use scoped validation, 5 MiB limits, row-level errors, and all-or-nothing writes; PostgreSQL behavior remains unverified. |
 | Manual security checks and documented deployment limitations | Partial | Existing guides need continued alignment with completed features. |
 
 ## Power-cut addendum
@@ -123,9 +123,9 @@ checklist, not a claim that database-backed behavior has been exercised.
 The active priority list is: (1) catalogue and offering scopes (implementation
 and unit checks complete; SQL runtime verification still needed); (2) seed
 loader (date-relative expanded dataset and fixture tests implemented, PostgreSQL
-execution pending); (3) finish imports, verified claims,
-and invitations (student preview/commit and scoped staff invitations are
-implemented and unit-tested; staff import, signup-request review, and live DB
-verification remain); (4) device-key management; (5) aggregate reports and
-email outbox; (6) remaining hardening; (7) close power-cut gaps.
+execution pending); (3) finish imports, verified claims, and invitations
+(student/staff preview and commit, signup review, password reset, and scoped
+invitations are implemented; live DB verification remains); (4) device-key
+management; (5) aggregate reports; (6) remaining hardening; (7) close
+power-cut gaps.
 Update this file whenever an item changes status.

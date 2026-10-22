@@ -26,7 +26,7 @@ func NewClaimHandler(service *ClaimService, tokens *TokenManager, cookieSecure b
 }
 
 func (h *ClaimHandler) RegisterRoutes(router chi.Router) {
-	router.With(httpx.RateLimitByIP(5, time.Minute)).Post("/auth/signup-claim", h.start)
+	router.Post("/auth/signup-claim", h.start)
 	router.With(httpx.RateLimitByIP(5, time.Minute)).Post("/auth/verify-email", h.verify)
 }
 
@@ -35,6 +35,7 @@ func (h *ClaimHandler) start(w http.ResponseWriter, r *http.Request) {
 		InstitutionID string `json:"institution_id" validate:"required,uuid"`
 		MatricNo      string `json:"matric_no" validate:"required,max=100"`
 		Email         string `json:"email" validate:"required,email,max=254"`
+		DepartmentID  string `json:"department_id" validate:"required,uuid"`
 	}
 	if err := httpx.DecodeJSON(w, r, &request); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
@@ -44,7 +45,7 @@ func (h *ClaimHandler) start(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Institution, matric number, or email is invalid", nil)
 		return
 	}
-	_, err := h.service.Start(r.Context(), request.InstitutionID, request.MatricNo, request.Email)
+	_, err := h.service.StartWithDepartment(r.Context(), request.InstitutionID, request.MatricNo, request.Email, request.DepartmentID)
 	switch {
 	case errors.Is(err, ErrClaimEmailMismatch), errors.Is(err, ErrStudentAlreadyClaimed):
 		writeClaimAcknowledgement(w)

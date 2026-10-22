@@ -50,6 +50,10 @@ type ClaimRepository interface {
 	ClaimStudent(context.Context, string, string, []byte, time.Time, string, string) (ClaimedStudent, error)
 }
 
+type ScopedSignupRequestRepository interface {
+	CreateScopedSignupRequest(context.Context, string, string, string, string) error
+}
+
 type ClaimService struct {
 	repository ClaimRepository
 	mailer     notify.Mailer
@@ -90,6 +94,10 @@ func (s *ClaimService) SetRandomSource(source io.Reader) error {
 }
 
 func (s *ClaimService) Start(ctx context.Context, institutionID, matricNo, email string) (ClaimStartResult, error) {
+	return s.StartWithDepartment(ctx, institutionID, matricNo, email, "")
+}
+
+func (s *ClaimService) StartWithDepartment(ctx context.Context, institutionID, matricNo, email, departmentID string) (ClaimStartResult, error) {
 	institutionID = strings.TrimSpace(institutionID)
 	matricNo = strings.TrimSpace(matricNo)
 	email = strings.TrimSpace(email)
@@ -101,10 +109,23 @@ func (s *ClaimService) Start(ctx context.Context, institutionID, matricNo, email
 		return ClaimStartResult{}, fmt.Errorf("find student record: %w", err)
 	}
 	if !found {
-		if err := s.repository.CreateSignupRequest(ctx, institutionID, matricNo, email); err != nil {
-			return ClaimStartResult{}, fmt.Errorf("create signup request: %w", err)
+		var createErr error
+		if departmentID != "" {
+			scoped, ok := s.repository.(ScopedSignupRequestRepository)
+			if !ok {
+				return ClaimStartResult{}, errors.New("scoped signup request storage is unavailable")
+			}
+			createErr = scoped.CreateScopedSignupRequest(ctx, institutionID, matricNo, email, departmentID)
+		} else {
+			createErr = s.repository.CreateSignupRequest(ctx, institutionID, matricNo, email)
+		}
+		if createErr != nil {
+			return ClaimStartResult{}, fmt.Errorf("create signup request: %w", createErr)
 		}
 		return ClaimStartResult{ApprovalRequested: true}, nil
+	}
+	if departmentID != "" && record.DepartmentID != departmentID {
+		return ClaimStartResult{}, ErrClaimEmailMismatch
 	}
 	if !strings.EqualFold(strings.TrimSpace(record.Email), email) {
 		return ClaimStartResult{}, ErrClaimEmailMismatch
@@ -126,7 +147,7 @@ func (s *ClaimService) Start(ctx context.Context, institutionID, matricNo, email
 		Subject: "Verify your student account",
 		Text:    "Your Campus Attendance verification code is " + code + ". It expires in 10 minutes.",
 	}
-	if err := s.mailer.Send(ctx, message); err != nil {
+	if err := s.mailer.Send(notify.ContextWithInstitution(ctx, record.InstitutionID), message); err != nil {
 		return ClaimStartResult{}, fmt.Errorf("send verification email: %w", err)
 	}
 	return ClaimStartResult{}, nil

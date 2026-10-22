@@ -122,6 +122,11 @@ func (s *PostgresStore) AcceptInvitation(
 		}
 		return Identity{}, fmt.Errorf("create invited user: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `UPDATE staff_records SET user_id=$3
+		WHERE institution_id=$1 AND lower(email)=lower($2) AND user_id IS NULL`,
+		invitation.InstitutionID, invitation.Email, userID); err != nil {
+		return Identity{}, fmt.Errorf("link invited account to staff record: %w", err)
+	}
 	if err := queries.CreateInvitedRole(ctx, dbgen.CreateInvitedRoleParams{
 		InstitutionID: invitation.InstitutionID,
 		UserID:        userID,

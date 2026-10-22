@@ -78,6 +78,15 @@ func (s *PostgresStore) Create(ctx context.Context, input sessions.StartInput, s
 		LateAfterMin: int32(input.LateAfter / time.Minute),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
+		var venueActive bool
+		venueErr := s.pool.QueryRow(ctx, `SELECT active FROM venues
+			WHERE institution_id=$1 AND id=$2`, institutionID, venueID).Scan(&venueActive)
+		if venueErr != nil {
+			return sessions.Session{}, fmt.Errorf("check session venue availability: %w", venueErr)
+		}
+		if !venueActive {
+			return sessions.Session{}, sessions.ErrInvalidSession
+		}
 		open, openErr := s.queries.FindActiveSessionAtVenue(ctx, dbgen.FindActiveSessionAtVenueParams{
 			InstitutionID: institutionID, VenueID: venueID,
 		})

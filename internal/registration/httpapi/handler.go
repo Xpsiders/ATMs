@@ -29,6 +29,69 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.Post("/offerings/{id}/registrations", h.register)
 	router.Get("/offerings/{id}/registrations", h.list)
 	router.Patch("/offerings/{id}/registrations/{student_id}", h.review)
+	router.Post("/offerings/{id}/registrations/bulk", h.bulkReview)
+	router.Get("/registration-approvals", h.pendingApprovals)
+}
+
+func (h *Handler) pendingApprovals(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	limit, valid := queryInt(r, "limit", 50)
+	if !valid {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "limit must be an integer", nil)
+		return
+	}
+	offset, valid := queryInt(r, "offset", 0)
+	if !valid {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "offset must be an integer", nil)
+		return
+	}
+	page, err := h.service.PendingApprovals(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, limit, offset)
+	if err != nil {
+		writeFailure(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) bulkReview(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principal(w, r)
+	if !ok {
+		return
+	}
+	offeringID, ok := pathUUID(w, chi.URLParam(r, "id"), "Offering")
+	if !ok {
+		return
+	}
+	var request struct {
+		StudentIDs []string `json:"student_ids"`
+		Status     string   `json:"status"`
+	}
+	if err := httpx.DecodeJSON(w, r, &request); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if len(request.StudentIDs) == 0 || len(request.StudentIDs) > 200 ||
+		(request.Status != "approved" && request.Status != "rejected") {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "student_ids and status are invalid", nil)
+		return
+	}
+	for _, studentID := range request.StudentIDs {
+		if _, err := db.ParseUUID(studentID); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "A student ID is invalid", nil)
+			return
+		}
+	}
+	items, err := h.service.BulkReview(r.Context(), principal.Identity.InstitutionID, offeringID,
+		principal.Identity.UserID, request.StudentIDs, request.Status)
+	if err != nil {
+		writeFailure(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (h *Handler) register(w http.ResponseWriter, r *http.Request) {

@@ -115,6 +115,26 @@ func TestMyOfferingsUsesAuthenticatedLecturerScopeAndPagination(t *testing.T) {
 	}
 }
 
+func TestCourseListingPassesDepartmentAndKindFilters(t *testing.T) {
+	t.Parallel()
+	store := &endpointStore{}
+	router := testRouter(t, store)
+	request := httptest.NewRequest(http.MethodGet, "/courses?department_id=department-1&kind=general", nil)
+	request = withIdentity(request, auth.Identity{InstitutionID: "tenant", UserID: "lecturer"})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+	if store.listInstitution != "tenant" || store.listUser != "lecturer" ||
+		store.listResource != catalogue.Courses ||
+		store.listFilters["department_id"] != "department-1" ||
+		store.listFilters["kind"] != "general" {
+		t.Fatalf("course query scope/filters = %q %q %q %v",
+			store.listInstitution, store.listUser, store.listResource, store.listFilters)
+	}
+}
+
 func TestVenueListingUsesAuthenticatedTenantAndReturnsTotal(t *testing.T) {
 	t.Parallel()
 	store := &endpointStore{

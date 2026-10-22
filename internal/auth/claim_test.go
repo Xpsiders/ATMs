@@ -29,11 +29,21 @@ type verification struct {
 func newClaimRepository() *memoryClaimRepository {
 	return &memoryClaimRepository{
 		record: auth.StudentRecord{
-			ID: "record-1", InstitutionID: "institution-1", DepartmentID: "department-locked",
+			ID: "record-1", InstitutionID: "institution-1", DepartmentID: "10000000-0000-4000-8000-000000000001",
 			MatricNo: "MAT001", Email: "record@example.test", DisplayName: "Student", Level: 200,
 		},
 		verifications: make(map[string]verification),
 	}
+}
+
+func (r *memoryClaimRepository) CreateScopedSignupRequest(_ context.Context, institutionID, matric, email, departmentID string) error {
+	if institutionID == "" || matric == "" || email == "" || departmentID == "" {
+		return errors.New("incomplete scoped request")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.requests++
+	return nil
 }
 
 func (r *memoryClaimRepository) FindStudentByMatric(_ context.Context, institutionID, matric string) (auth.StudentRecord, bool, error) {
@@ -115,7 +125,7 @@ func TestStudentClaimVerificationLocksRecordDepartmentAndLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed.DepartmentID != "department-locked" || claimed.Level != 200 {
+	if claimed.DepartmentID != "10000000-0000-4000-8000-000000000001" || claimed.Level != 200 {
 		t.Fatalf("claim changed locked student attributes: %+v", claimed)
 	}
 	if _, err := service.Verify(context.Background(), "institution-1", "MAT001", "000007", "correct horse battery staple"); !errors.Is(err, auth.ErrStudentAlreadyClaimed) {

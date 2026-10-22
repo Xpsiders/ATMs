@@ -2,8 +2,13 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"attendance-api/internal/db"
@@ -17,7 +22,17 @@ import (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool           *pgxpool.Pool
+	invitationBase string
+}
+
+func (s *Store) SetInvitationBaseURL(baseURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return errors.New("invitation base URL must be absolute")
+	}
+	s.invitationBase = strings.TrimRight(baseURL, "/")
+	return nil
 }
 
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
@@ -29,6 +44,7 @@ func NewStore(pool *pgxpool.Pool) (*Store, error) {
 
 type queryer interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func (s *Store) ValidateStudents(ctx context.Context, institutionID, userID string, students []imports.StudentRow) ([]imports.RowError, error) {
@@ -225,4 +241,182 @@ func parseActor(institutionID, userID string) (pgtype.UUID, pgtype.UUID, error) 
 	return tenant, actor, nil
 }
 
+func (s *Store) ValidateStaff(ctx context.Context, institutionID, userID string, staff []imports.StaffRow) ([]imports.RowError, error) {
+	tenant, actor, err := parseActor(institutionID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return validateStaff(ctx, s.pool, tenant, actor, institutionID, staff)
+}
+
+func (s *Store) CommitStaff(ctx context.Context, institutionID, userID string, staff []imports.StaffRow) error {
+	tenant, actor, err := parseActor(institutionID, userID)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin staff import: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	validationErrors, err := validateStaff(ctx, tx, tenant, actor, institutionID, staff)
+	if err != nil {
+		return err
+	}
+	if len(validationErrors) > 0 {
+		return imports.ErrImportChanged
+	}
+	for _, row := range staff {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(lower($1), 0))`, row.Email); err != nil {
+			return fmt.Errorf("lock staff invitation email: %w", err)
+		}
+		var emailExists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM users WHERE institution_id=$1 AND lower(email)=lower($2)
+			UNION ALL SELECT 1 FROM invitations WHERE institution_id=$1 AND lower(email)=lower($2) AND accepted_at IS NULL
+			UNION ALL SELECT 1 FROM staff_records WHERE institution_id=$1 AND lower(email)=lower($2)
+		)`, tenant, row.Email).Scan(&emailExists); err != nil {
+			return fmt.Errorf("recheck staff invitation email: %w", err)
+		}
+		if emailExists {
+			return imports.ErrImportChanged
+		}
+		department, err := db.ParseUUID(row.DepartmentID)
+		if err != nil {
+			return imports.ErrImportPreviewHasErrors
+		}
+		var recordID pgtype.UUID
+		if err := tx.QueryRow(ctx, `INSERT INTO staff_records(institution_id,department_id,staff_no,email,display_name)
+			VALUES($1,$2,$3,lower($4),$5) RETURNING id`, tenant, department, row.StaffNo, row.Email, row.DisplayName).Scan(&recordID); err != nil {
+			var databaseError *pgconn.PgError
+			if errors.As(err, &databaseError) && databaseError.Code == "23505" &&
+				databaseError.ConstraintName == "staff_records_institution_id_staff_no_key" {
+				return imports.ErrDuplicateStaff
+			}
+			return fmt.Errorf("insert staff record on CSV line %d: %w", row.Line, err)
+		}
+		var tokenBytes [32]byte
+		if _, err := rand.Read(tokenBytes[:]); err != nil {
+			return fmt.Errorf("generate staff invitation token: %w", err)
+		}
+		token := base64.RawURLEncoding.EncodeToString(tokenBytes[:])
+		tokenHash := sha256.Sum256([]byte(token))
+		var invitationID pgtype.UUID
+		if err := tx.QueryRow(ctx, `INSERT INTO invitations(
+			institution_id,email,role,scope_type,department_id,token_hash,expires_at
+		) VALUES($1,lower($2),'lecturer','department',$3,$4,now()+interval '7 days') RETURNING id`,
+			tenant, row.Email, department, tokenHash[:]).Scan(&invitationID); err != nil {
+			return fmt.Errorf("create lecturer invitation on CSV line %d: %w", row.Line, err)
+		}
+		link := s.invitationBase + "/accept-invitation?institution_id=" +
+			url.QueryEscape(institutionID) + "&token=" + url.QueryEscape(token)
+		if s.invitationBase == "" {
+			link = "/accept-invitation?institution_id=" + url.QueryEscape(institutionID) +
+				"&token=" + url.QueryEscape(token)
+		}
+		body, err := json.Marshal(map[string]string{"staff_no": row.StaffNo, "department_id": row.DepartmentID})
+		if err != nil {
+			return fmt.Errorf("encode staff import audit: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
+			VALUES($1,$2,'staff.imported','staff_record',$3,$4::jsonb)`, tenant, actor, recordID, body); err != nil {
+			return fmt.Errorf("audit staff import: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
+			VALUES($1,$2,'invitation.created','invitation',$3,jsonb_build_object('role','lecturer','scope_type','department','department_id',$4::text))`,
+			tenant, actor, invitationID, department); err != nil {
+			return fmt.Errorf("audit staff invitation: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO email_outbox(institution_id,recipient,subject,body)
+			VALUES($1,lower($2),'Campus Attendance staff invitation',$3)`, tenant, row.Email,
+			fmt.Sprintf("Open %s to create your lecturer account.", link)); err != nil {
+			return fmt.Errorf("enqueue lecturer invitation: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit staff import transaction: %w", err)
+	}
+	return nil
+}
+
+func validateStaff(
+	ctx context.Context,
+	dbQuery queryer,
+	tenant, actor pgtype.UUID,
+	institutionID string,
+	staff []imports.StaffRow,
+) ([]imports.RowError, error) {
+	departmentIDs := make([]pgtype.UUID, 0, len(staff))
+	for _, row := range staff {
+		if department, err := db.ParseUUID(row.DepartmentID); err == nil {
+			departmentIDs = append(departmentIDs, department)
+		}
+	}
+	departments := make(map[string]string, len(departmentIDs))
+	if len(departmentIDs) > 0 {
+		rows, err := dbQuery.Query(ctx, `SELECT id::text,faculty_id::text FROM departments
+			WHERE institution_id=$1 AND id=ANY($2::uuid[])`, tenant, departmentIDs)
+		if err != nil {
+			return nil, fmt.Errorf("load staff import departments: %w", err)
+		}
+		for rows.Next() {
+			var id, facultyID string
+			if err := rows.Scan(&id, &facultyID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan staff import department: %w", err)
+			}
+			departments[id] = facultyID
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read staff import departments: %w", err)
+		}
+		rows.Close()
+	}
+	assignments, err := loadAssignments(ctx, dbQuery, tenant, actor)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]imports.RowError, 0)
+	for _, row := range staff {
+		facultyID, found := departments[row.DepartmentID]
+		if !found {
+			result = append(result, imports.RowError{Line: row.Line, Column: "department_id", Message: "department does not exist in this institution"})
+			continue
+		}
+		target := rbac.Target{InstitutionID: institutionID, FacultyID: facultyID, DepartmentID: row.DepartmentID}
+		allowed := false
+		for _, assignment := range assignments {
+			if rbac.CanAccess(assignment, target, "", "write") {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			result = append(result, imports.RowError{Line: row.Line, Column: "department_id", Message: "department is outside your import scope"})
+			continue
+		}
+		var staffExists, emailExists bool
+		if err := dbQuery.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM staff_records
+			WHERE institution_id=$1 AND lower(staff_no)=lower($2))`, tenant, row.StaffNo).Scan(&staffExists); err != nil {
+			return nil, fmt.Errorf("check imported staff number: %w", err)
+		}
+		if staffExists {
+			result = append(result, imports.RowError{Line: row.Line, Column: "staff_no", Message: "staff number already exists in this institution"})
+		}
+		if err := dbQuery.QueryRow(ctx, `SELECT EXISTS(
+			SELECT 1 FROM users WHERE institution_id=$1 AND lower(email)=lower($2)
+			UNION ALL SELECT 1 FROM invitations WHERE institution_id=$1 AND lower(email)=lower($2) AND accepted_at IS NULL
+			UNION ALL SELECT 1 FROM staff_records WHERE institution_id=$1 AND lower(email)=lower($2)
+		)`, tenant, row.Email).Scan(&emailExists); err != nil {
+			return nil, fmt.Errorf("check imported staff email: %w", err)
+		}
+		if emailExists {
+			result = append(result, imports.RowError{Line: row.Line, Column: "email", Message: "email already has a staff record, account, or invitation"})
+		}
+	}
+	return result, nil
+}
+
 var _ imports.StudentStore = (*Store)(nil)
+var _ imports.StaffStore = (*Store)(nil)

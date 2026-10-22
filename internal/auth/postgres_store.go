@@ -280,6 +280,38 @@ func (s *PostgresStore) CreateSignupRequest(ctx context.Context, institutionIDTe
 	return nil
 }
 
+func (s *PostgresStore) CreateScopedSignupRequest(ctx context.Context, institutionIDText, matricNo, email, departmentIDText string) error {
+	institutionID, err := db.ParseUUID(institutionIDText)
+	if err != nil {
+		return fmt.Errorf("parse signup request institution ID: %w", err)
+	}
+	departmentID, err := db.ParseUUID(departmentIDText)
+	if err != nil {
+		return fmt.Errorf("parse signup request department ID: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `INSERT INTO signup_requests(institution_id,matric_no,email,department_id)
+		SELECT $1,$2,lower($3),$4
+		WHERE EXISTS(SELECT 1 FROM departments WHERE institution_id=$1 AND id=$4)
+		ON CONFLICT (institution_id,lower(matric_no),lower(email),department_id)
+			WHERE status='pending' AND department_id IS NOT NULL DO NOTHING`,
+		institutionID, matricNo, email, departmentID)
+	if err != nil {
+		return fmt.Errorf("create scoped signup request: %w", err)
+	}
+	if tag.RowsAffected() > 1 {
+		return errors.New("signup request insert affected an unexpected number of rows")
+	}
+	var departmentExists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM departments WHERE institution_id=$1 AND id=$2)`,
+		institutionID, departmentID).Scan(&departmentExists); err != nil {
+		return fmt.Errorf("verify signup department: %w", err)
+	}
+	if !departmentExists {
+		return errors.New("signup request department does not exist in the institution")
+	}
+	return nil
+}
+
 func (s *PostgresStore) CreateVerification(ctx context.Context, institutionIDText, studentIDText string, codeHash []byte, expiresAt time.Time) error {
 	institutionID, err := db.ParseUUID(institutionIDText)
 	if err != nil {

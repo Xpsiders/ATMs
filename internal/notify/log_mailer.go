@@ -26,8 +26,11 @@ func (m LogMailer) Send(ctx context.Context, message Message) error {
 	return nil
 }
 
-func NewMailer(apiKey, from string, logger *slog.Logger) (Mailer, error) {
+func NewMailer(apiKey, from, environment string, logger *slog.Logger) (Mailer, error) {
 	if apiKey == "" {
+		if environment != "development" {
+			return nil, errors.New("MAIL_API_KEY is required outside development")
+		}
 		return LogMailer{Logger: logger}, nil
 	}
 	if from == "" {

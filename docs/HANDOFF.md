@@ -26,15 +26,16 @@ that every phase or database-backed behavior is complete. See
 
 - Catalogue/offering resource-scope filtering and destination checks, with
   related RBAC tests and documentation.
-- A transactional, repeatable `scripts/seed` demo data loader with a
-  tenant-specific `--reset` option. It includes two faculties, four
-  departments/programmes, ten courses and eleven offerings across all
-  registration modes, four lecturer accounts/staff records, 40 students,
-  registrations and auto targets, current-week timetables, an open session,
-  historical web/scanner/override attendance, pending invitation/signup
-  request, and a registered scanner. It prints all role logins and unclaimed
-  matric/email pairs; the scanner key is shown only on initial creation.
-  Fixture tests pass; execution against PostgreSQL remains outstanding.
+- A transactional, repeatable, date-relative `scripts/seed` dataset with two
+  faculties, four departments/programmes, ten courses/offerings spanning all
+  registration modes, four lecturer accounts/staff records, 48 students (16
+  claimed), three venues/scanners, weekly timetables, open and historical
+  sessions, registrations, and varied attendance/check-in/scan/override states.
+  It also creates pending invitation, signup, and scanner-enrolment records.
+  Credentials and unclaimed matric/email pairs are printed; new scanner keys
+  and the invitation token appear only on first creation. `--reset` is scoped
+  to the demo institution. Deterministic fixture tests pass; execution against
+  PostgreSQL remains outstanding.
 - Student CSV preview and commit:
   - `POST /imports/students/preview` parses and validates rows without writes.
   - `POST /imports/students` revalidates and commits all rows in one
@@ -107,18 +108,31 @@ that every phase or database-backed behavior is complete. See
   `go vet ./...`, `go build ./...`, and `go test ./...` passed. OpenAPI
   validation passed with the four existing recommended-rule warnings listed
   above. The database-backed seed and queries remain unverified.
+- Staff CSV preview/commit now enforces row validation and department scope;
+  commit atomically creates staff records, department-scoped lecturer
+  invitations, audit entries, and queued messages. Signup requests are tied to
+  departments and can be listed/reviewed by scoped administrators, with student
+  record creation and audit in one transaction. Password reset uses
+  enumeration-safe responses, HMAC-hashed one-time codes, persistent attempt
+  limits, refresh-token revocation, and forced-change clearing. Venue CRUD and
+  academic session/semester mutations are scoped and audited; administrator
+  role assignments follow the institution/faculty hierarchy. The email outbox
+  worker retries queued mail, and log-only delivery is development-only. Unit
+  tests cover parsing, pagination, math/backoff, and scope rules; PostgreSQL
+  transaction and migration behavior remain unverified. Full
+  `gofmt -l .`, `go vet ./...`, `go build ./...`, and `go test ./...` passed
+  for this feature slice.
 
 ## Next priority
 
 Continue using the active order in `docs/PROGRESS.md`. Database verification
 of the catalogue scope queries and seed loader remains blocked while Docker
-Desktop is paused; code work still outstanding includes staff CSV imports,
-signup-request review, device-key provisioning/rotation/revocation, aggregate
-reports, and the email outbox worker.
+Desktop is paused; code work still outstanding includes device-key
+provisioning/rotation/revocation, aggregate reports, disputes, and remaining
+hardening.
 
 ## Do not claim complete
 
-The complete seven-phase backend is not finished. Live database/migration
-verification, the full race suite, full lint, several domain API groups,
-device-key management, aggregate reports, disputes, outbox processing, and
+The complete seven-phase backend is not finished. Live Database/migration verification, the full race suite, full lint, several
+domain API groups, device-key management, aggregate reports, disputes, and
 some hardening requirements remain outstanding as detailed in `PROGRESS.md`.

@@ -35,6 +35,9 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	}
 	router.Get("/me/offerings", h.myOfferings)
 	router.Get("/venues", h.venues)
+	router.Post("/venues", h.createVenue)
+	router.Patch("/venues/{id}", h.updateVenue)
+	router.Delete("/venues/{id}", h.deactivateVenue)
 	router.Get("/institutions", h.list(catalogue.Institutions))
 	router.Get("/institutions/{id}", h.get(catalogue.Institutions))
 	router.Patch("/institutions/{id}", h.update(catalogue.Institutions))
@@ -43,6 +46,12 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.Put("/offerings/{id}/lecturers", h.setOfferingLecturers)
 	router.Get("/offerings/{id}/auto-targets", h.offeringAutoTargets)
 	router.Put("/offerings/{id}/auto-targets", h.setOfferingAutoTargets)
+	router.Get("/offerings/{id}/timetable", h.listTimetable)
+	router.Post("/offerings/{id}/timetable", h.createTimetable)
+	router.Put("/offerings/{id}/timetable/{slot_id}", h.updateTimetable)
+	router.Delete("/offerings/{id}/timetable/{slot_id}", h.deleteTimetable)
+	router.Get("/teaching-requests", h.listTeachingRequests)
+	router.Patch("/teaching-requests/{id}", h.reviewTeachingRequest)
 }
 
 func (h *Handler) myOfferings(w http.ResponseWriter, r *http.Request) {
@@ -90,12 +99,187 @@ func (h *Handler) venues(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, page)
 }
 
+func (h *Handler) createVenue(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	var input catalogue.VenueInput
+	if err := httpx.DecodeJSON(w, r, &input); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if err := httpx.ValidateStruct(input); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Venue fields are invalid", nil)
+		return
+	}
+	venue, err := h.service.CreateVenue(r.Context(), principal.Identity.InstitutionID, principal.Identity.UserID, input)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to create venue")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, venue)
+}
+
+func (h *Handler) updateVenue(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	venueID := chi.URLParam(r, "id")
+	if _, err := db.ParseUUID(venueID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Venue ID is invalid", nil)
+		return
+	}
+	var update catalogue.VenueUpdate
+	if err := httpx.DecodeJSON(w, r, &update); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if err := httpx.ValidateStruct(update); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Venue fields are invalid", nil)
+		return
+	}
+	venue, err := h.service.UpdateVenue(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, venueID, update)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to update venue")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, venue)
+}
+
+func (h *Handler) deactivateVenue(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	venueID := chi.URLParam(r, "id")
+	if _, err := db.ParseUUID(venueID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Venue ID is invalid", nil)
+		return
+	}
+	if err := h.service.DeactivateVenue(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, venueID); err != nil {
+		writeFailure(w, r, err, "Unable to deactivate venue")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) registerResource(router chi.Router, path string, resource catalogue.Resource) {
 	router.Get("/"+path, h.list(resource))
-	router.Post("/"+path, h.create(resource))
+	if resource == catalogue.Offerings {
+		router.Post("/"+path, h.createLecturerOffering)
+	} else {
+		router.Post("/"+path, h.create(resource))
+	}
 	router.Get("/"+path+"/{id}", h.get(resource))
 	router.Patch("/"+path+"/{id}", h.update(resource))
 	router.Delete("/"+path+"/{id}", h.delete(resource))
+}
+
+func (h *Handler) createLecturerOffering(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	var input catalogue.OfferingInput
+	if err := httpx.DecodeJSON(w, r, &input); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if input.LateCountsAsAttended == nil {
+		value := true
+		input.LateCountsAsAttended = &value
+	}
+	if err := httpx.ValidateStruct(input); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Offering fields are invalid", nil)
+		return
+	}
+	result, err := h.service.CreateLecturerOffering(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, input)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to create offering or teaching request")
+		return
+	}
+	status := http.StatusCreated
+	if result["status"] == "pending" {
+		status = http.StatusAccepted
+	}
+	httpx.WriteJSON(w, status, result)
+}
+
+func (h *Handler) listTeachingRequests(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, ok := readPagination(w, r)
+	if !ok {
+		return
+	}
+	result, err := h.service.ListTeachingRequests(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, limit, offset)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to list pending teaching requests")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) reviewTeachingRequest(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	requestID := chi.URLParam(r, "id")
+	if _, err := db.ParseUUID(requestID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Teaching request ID is invalid", nil)
+		return
+	}
+	var request struct {
+		Status string `json:"status" validate:"required,oneof=approved rejected"`
+	}
+	if err := httpx.DecodeJSON(w, r, &request); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if err := httpx.ValidateStruct(request); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "status must be approved or rejected", nil)
+		return
+	}
+	result, err := h.service.ReviewTeachingRequest(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, requestID, request.Status)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to review teaching request")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+func readPagination(w http.ResponseWriter, r *http.Request) (int, int, bool) {
+	limit, offset := 50, 0
+	var err error
+	if value := r.URL.Query().Get("limit"); value != "" {
+		limit, err = strconv.Atoi(value)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "limit must be an integer", nil)
+			return 0, 0, false
+		}
+	}
+	if value := r.URL.Query().Get("offset"); value != "" {
+		offset, err = strconv.Atoi(value)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "offset must be an integer", nil)
+			return 0, 0, false
+		}
+	}
+	if limit < 1 || limit > 200 || offset < 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "limit must be 1..200 and offset non-negative", nil)
+		return 0, 0, false
+	}
+	return limit, offset, true
 }
 
 func (h *Handler) list(resource catalogue.Resource) http.HandlerFunc {
@@ -105,7 +289,7 @@ func (h *Handler) list(resource catalogue.Resource) http.HandlerFunc {
 			return
 		}
 		filters := map[string]string{}
-		for _, key := range []string{"id", "faculty_id", "department_id", "programme_id", "academic_session_id", "semester_id", "course_id", "level", "registration_mode", "current", "q"} {
+		for _, key := range []string{"id", "faculty_id", "department_id", "programme_id", "academic_session_id", "semester_id", "course_id", "level", "kind", "registration_mode", "current", "q"} {
 			if value := strings.TrimSpace(r.URL.Query().Get(key)); value != "" {
 				filters[key] = value
 			}
@@ -375,6 +559,81 @@ func (h *Handler) setOfferingAutoTargets(w http.ResponseWriter, r *http.Request)
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"targets": request.Targets})
 }
 
+func (h *Handler) listTimetable(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requireOffering(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.service.ListTimetable(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, chi.URLParam(r, "id"))
+	if err != nil {
+		writeFailure(w, r, err, "Unable to list offering timetable")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (h *Handler) createTimetable(w http.ResponseWriter, r *http.Request) {
+	h.saveTimetable(w, r, false)
+}
+
+func (h *Handler) updateTimetable(w http.ResponseWriter, r *http.Request) {
+	h.saveTimetable(w, r, true)
+}
+
+func (h *Handler) saveTimetable(w http.ResponseWriter, r *http.Request, update bool) {
+	principal, ok := requireOffering(w, r)
+	if !ok {
+		return
+	}
+	slotID := ""
+	if update {
+		slotID = chi.URLParam(r, "slot_id")
+		if _, err := db.ParseUUID(slotID); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Timetable slot ID is invalid", nil)
+			return
+		}
+	}
+	var input catalogue.TimetableInput
+	if err := httpx.DecodeJSON(w, r, &input); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if err := httpx.ValidateStruct(input); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Timetable slot fields are invalid", nil)
+		return
+	}
+	slot, err := h.service.SaveTimetable(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, chi.URLParam(r, "id"), slotID, input)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to save timetable slot")
+		return
+	}
+	status := http.StatusOK
+	if !update {
+		status = http.StatusCreated
+	}
+	httpx.WriteJSON(w, status, slot)
+}
+
+func (h *Handler) deleteTimetable(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requireOffering(w, r)
+	if !ok {
+		return
+	}
+	slotID := chi.URLParam(r, "slot_id")
+	if _, err := db.ParseUUID(slotID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Timetable slot ID is invalid", nil)
+		return
+	}
+	if err := h.service.DeleteTimetable(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, chi.URLParam(r, "id"), slotID); err != nil {
+		writeFailure(w, r, err, "Unable to delete timetable slot")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func requireOffering(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
 	principal, ok := requirePrincipal(w, r)
 	if !ok {
@@ -427,6 +686,10 @@ func writeFailure(w http.ResponseWriter, r *http.Request, err error, message str
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Resource fields are invalid", nil)
 	case errors.Is(err, catalogue.ErrForbidden):
 		httpx.WriteError(w, http.StatusForbidden, "access_denied", "You cannot manage this resource", nil)
+	case errors.Is(err, catalogue.ErrTimetableOverlap):
+		httpx.WriteError(w, http.StatusConflict, "timetable_overlap", "Another slot overlaps at this venue", nil)
+	case errors.Is(err, catalogue.ErrSlotNotFound):
+		httpx.WriteError(w, http.StatusNotFound, "not_found", "Timetable slot was not found", nil)
 	case errors.Is(err, catalogue.ErrNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "not_found", "Resource was not found", nil)
 	default:

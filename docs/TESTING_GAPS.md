@@ -20,14 +20,41 @@ manual guide and a real PostgreSQL 15+ instance to validate at least:
 - Staff invitations enforce creator role/scope against target resources, send
   only token hashes to storage, and accept tokens once. Verify that user
   creation, scoped role assignment, invitation consumption, and the role audit
-  entry commit or roll back together, including a competing acceptance.
+  entry and staff-record linkage commit or roll back together, including a
+  competing acceptance. The log-only mailer must be selected only in
+  development and must print the invitation link.
+- Staff CSV preview enforces the 5 MiB cap, row validation, and department
+  scope. Verify that commit atomically inserts all staff records, scoped
+  lecturer invitations, audit rows, and outbox messages; force a duplicate or
+  email enqueue failure and confirm no partial writes remain.
+- Signup request listing and review must expose only requests in the caller's
+  department/faculty scope. Verify that approval validates the programme's
+  department and atomically creates the student record, updates the request,
+  and writes its audit row; rejection must not create a student record.
+- Password reset requests for known and unknown emails must return identical
+  acknowledgements. Verify stored reset codes are HMAC hashes, expire after
+  15 minutes, are single-use, stop accepting after five failed attempts, and
+  clear `force_password_change` while revoking existing refresh tokens.
+- The email outbox worker must claim rows safely under concurrent workers,
+  recover stale `sending` leases, retry with bounded backoff, and mark a message
+  failed after five delivery attempts. Confirm the development log mailer is
+  unavailable outside `APP_ENV=development`.
+- Venue create/update/deactivate operations must enforce institution, faculty,
+  and department scope and commit audit events atomically. Deactivated venues
+  must not be offered for new timetable slots or session starts, while
+  historical sessions remain readable.
+- Academic session and semester mutations and administrator role assignments
+  must be scoped and audited. Verify changing the current academic session
+  clears its predecessor atomically and cannot violate the single-current
+  partial unique index.
 - Student verification-code consumption, account creation, record claiming,
   and student-role assignment commit or roll back together.
 - Signup start responses are identical for matching, mismatched,
   already-claimed, and unknown records, while only matching eligible records
-  receive a code; verification failures do not reveal claim state. Exercise
-  rate limits and any persistent verification-attempt caps after they are
-  implemented.
+  receive a code; verification failures do not reveal claim state. Confirm
+  ordinary authenticated reads are not throttled by unrelated requests and
+  that `/auth/verify-email` alone returns 429 after five requests per minute
+  from the same client IP.
 - Device task queries resolve only the authenticated device's venue and
   pending enrolments, and enrolment completion cannot update another device's
   task.

@@ -27,9 +27,32 @@ func NewHandler(service *reports.Service) (*Handler, error) {
 }
 
 func (h *Handler) RegisterRoutes(router chi.Router) {
+	router.Get("/sessions/{id}/live", h.liveSession)
 	router.Get("/sessions/{id}/report", h.sessionReport)
 	router.Get("/sessions/{id}/roster-sheet", h.rosterSheet)
 	router.Post("/sessions/{id}/overrides/bulk", h.bulkOverride)
+}
+
+func (h *Handler) liveSession(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	sessionID, ok := parseSessionID(w, r)
+	if !ok {
+		return
+	}
+	filter, ok := parseFilter(w, r)
+	if !ok {
+		return
+	}
+	page, err := h.service.LiveSession(r.Context(), principal.Identity.InstitutionID,
+		sessionID, principal.Identity.UserID, filter)
+	if err != nil {
+		writeFailure(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, page)
 }
 
 func (h *Handler) sessionReport(w http.ResponseWriter, r *http.Request) {

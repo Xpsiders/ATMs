@@ -6,14 +6,15 @@ Standalone Go REST API repository for the Campus Attendance Platform.
 
 The repository contains the Phase 0 foundation and tested slices for
 authentication/student claims, check-in, sessions, device scans,
-organization/catalogue, registration, student CSV preview/commit, scoped staff
-invitations, session reports, roster sheets, attendance overrides, student live
-classes, lecturer-visible offerings, and paginated venue listing. A development
-seed loader is available. The backend is still incomplete:
-database-backed verification, staff CSV import, signup-request review,
-device-key management, aggregate reports, disputes, email outbox processing,
-and several hardening requirements remain. Do not deploy this as a
-feature-ready attendance service.
+organization/catalogue, registration, student and staff CSV import, scoped
+staff invitations and signup-request review, password reset, administrator role
+assignment, audited venue and academic management, queued email delivery,
+session reports, roster sheets, attendance overrides, student live classes,
+lecturer-visible offerings, and paginated venue listing. A development seed
+loader is available. The backend is still incomplete: database-backed
+verification, device-key management, aggregate reports, disputes, and several
+hardening requirements remain. Do not deploy this as a feature-ready
+attendance service.
 
 ## Requirements
 
@@ -91,10 +92,36 @@ and `$env:ALLOWED_ORIGIN = "..."` before running Go commands.
 ## Frontend contract
 
 `api/openapi.yaml` is intended to be the source contract for
-`attendance-web`. It describes implemented health, authentication and staff
-invitation, catalogue, registration, student import, check-in, session, live
-class, venue, report, roster, override, and device operations; remaining
-endpoint groups are still under development.
+`attendance-web`. It describes health, authentication, staff invitations,
+password reset, signup-request review, imports, catalogue and academic
+management, scoped venues and administrator role assignment, registration,
+check-in, session, reports, roster, overrides, and device operations. The
+database-backed workflows still need manual verification.
+
+## Identity and staff administration
+
+- Unknown-matric signup requests include `department_id`; a department-scoped
+  administrator can list requests and approve one by supplying the student's
+  department, programme, level, and display name, or reject it.
+- Staff CSV imports use `staff_no,email,display_name,department_id` headers.
+  Preview with `POST /imports/staff/preview`, then commit the entire validated
+  file with `POST /imports/staff`. Commit creates staff records, lecturer
+  invitations, audit rows, and queued invitation messages in one transaction.
+- `POST /auth/password/forgot` always returns the same acknowledgement whether
+  an account exists or not. `POST /auth/password/reset` consumes a one-time
+  six-digit code; each code is capped at five failed attempts and expires after
+  15 minutes.
+- Venue management is available through `POST /venues`, `PATCH /venues/{id}`,
+  and `DELETE /venues/{id}` (soft deactivation). Department/faculty scopes
+  require an associated `department_id`; actions are audited. Academic session
+  and semester CRUD is audited, and setting an academic session's `current`
+  field atomically clears the previous current session.
+- `POST /role-assignments` lets institution administrators assign faculty or
+  department administrators; faculty administrators can assign department
+  administrators only within their faculty.
+- Email delivery is queued in PostgreSQL and retried by the API worker. The
+  log-only mailer is available only with `APP_ENV=development`; configure
+  `MAIL_API_KEY` and `MAIL_FROM` for non-development environments.
 
 See `docs/ARCHITECTURE.md`, `docs/DECISIONS.md`, and
 `docs/TESTING_GAPS.md`. Track delivery status in `docs/PROGRESS.md`.

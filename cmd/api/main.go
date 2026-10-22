@@ -26,6 +26,7 @@ import (
 	importshttp "attendance-api/internal/imports/httpapi"
 	importspostgres "attendance-api/internal/imports/postgres"
 	"attendance-api/internal/notify"
+	notifypostgres "attendance-api/internal/notify/postgres"
 	"attendance-api/internal/registration"
 	registrationhttp "attendance-api/internal/registration/httpapi"
 	registrationpostgres "attendance-api/internal/registration/postgres"
@@ -51,7 +52,6 @@ func main() {
 		slog.Error("load configuration", "error", err)
 		os.Exit(1)
 	}
-
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(logger)
 
@@ -87,11 +87,31 @@ func main() {
 		logger.Error("configure authentication handler", "error", err)
 		os.Exit(1)
 	}
-	mailer, err := notify.NewMailer(cfg.MailAPIKey, cfg.MailFrom, logger)
+	deliveryMailer, err := notify.NewMailer(cfg.MailAPIKey, cfg.MailFrom, cfg.AppEnv, logger)
 	if err != nil {
 		logger.Error("configure mailer", "error", err)
 		os.Exit(1)
 	}
+	outboxStore, err := notifypostgres.NewStore(pool)
+	if err != nil {
+		logger.Error("configure email outbox store", "error", err)
+		os.Exit(1)
+	}
+	mailer, err := notify.NewQueuedMailer(outboxStore)
+	if err != nil {
+		logger.Error("configure queued mailer", "error", err)
+		os.Exit(1)
+	}
+	outboxWorker, err := notify.NewWorker(outboxStore, deliveryMailer, systemClock.Now, logger)
+	if err != nil {
+		logger.Error("configure email outbox worker", "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := outboxWorker.Run(ctx, 10*time.Second); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("email outbox worker stopped", "error", err)
+		}
+	}()
 	claimService, err := auth.NewClaimService(refreshStore, mailer, systemClock, cfg.CodeHMACSecret)
 	if err != nil {
 		logger.Error("configure student claim service", "error", err)
@@ -110,6 +130,40 @@ func main() {
 	invitationHandler, err := auth.NewInvitationHandler(invitationService, tokens, cfg.CookieSecure, cfg.CookieSameSite)
 	if err != nil {
 		logger.Error("configure invitation handler", "error", err)
+		os.Exit(1)
+	}
+	if err := invitationService.SetBaseURL(cfg.AllowedOrigin); err != nil {
+		logger.Error("configure invitation URL", "error", err)
+		os.Exit(1)
+	}
+	passwordResetService, err := auth.NewPasswordResetService(refreshStore, systemClock, cfg.CodeHMACSecret)
+	if err != nil {
+		logger.Error("configure password reset service", "error", err)
+		os.Exit(1)
+	}
+	passwordResetHandler, err := auth.NewPasswordResetHandler(passwordResetService)
+	if err != nil {
+		logger.Error("configure password reset handler", "error", err)
+		os.Exit(1)
+	}
+	signupRequestService, err := auth.NewSignupRequestService(refreshStore)
+	if err != nil {
+		logger.Error("configure signup request service", "error", err)
+		os.Exit(1)
+	}
+	signupRequestHandler, err := auth.NewSignupRequestHandler(signupRequestService)
+	if err != nil {
+		logger.Error("configure signup request handler", "error", err)
+		os.Exit(1)
+	}
+	roleAssignmentService, err := auth.NewRoleAssignmentService(refreshStore)
+	if err != nil {
+		logger.Error("configure role assignment service", "error", err)
+		os.Exit(1)
+	}
+	roleAssignmentHandler, err := auth.NewRoleAssignmentHandler(roleAssignmentService)
+	if err != nil {
+		logger.Error("configure role assignment handler", "error", err)
 		os.Exit(1)
 	}
 	checkinStore, err := checkinpostgres.NewPostgresStore(queries)
@@ -189,7 +243,7 @@ func main() {
 		logger.Error("configure catalogue handler", "error", err)
 		os.Exit(1)
 	}
-	registrationStore, err := registrationpostgres.NewStore(queries)
+	registrationStore, err := registrationpostgres.NewStore(queries, pool)
 	if err != nil {
 		logger.Error("configure registration store", "error", err)
 		os.Exit(1)
@@ -225,6 +279,10 @@ func main() {
 		logger.Error("configure student import store", "error", err)
 		os.Exit(1)
 	}
+	if err := importStore.SetInvitationBaseURL(cfg.AllowedOrigin); err != nil {
+		logger.Error("configure staff invitation URL", "error", err)
+		os.Exit(1)
+	}
 	importService, err := studentimports.NewService(importStore, studentimports.MaxStudentCSVBytes)
 	if err != nil {
 		logger.Error("configure student import service", "error", err)
@@ -239,11 +297,12 @@ func main() {
 		authHandler.RegisterRoutes(router)
 		claimHandler.RegisterRoutes(router)
 		invitationHandler.RegisterPublicRoutes(router)
-		sessionHandler.RegisterRoutes(router.With(auth.UserAuth(tokens), httpx.RateLimitByIP(20, time.Minute),
-			auth.UserRateLimit(10, time.Minute)))
-		router.With(auth.UserAuth(tokens), httpx.RateLimitByIP(20, time.Minute),
-			auth.UserRateLimit(10, time.Minute)).Group(func(userRouter chi.Router) {
+		passwordResetHandler.RegisterRoutes(router)
+		sessionHandler.RegisterRoutes(router.With(auth.UserAuth(tokens)))
+		router.With(auth.UserAuth(tokens)).Group(func(userRouter chi.Router) {
 			invitationHandler.RegisterAuthenticatedRoutes(userRouter)
+			signupRequestHandler.RegisterRoutes(userRouter)
+			roleAssignmentHandler.RegisterRoutes(userRouter)
 			catalogueHandler.RegisterRoutes(userRouter)
 			registrationHandler.RegisterRoutes(userRouter)
 			studentPortalHandler.RegisterRoutes(userRouter)

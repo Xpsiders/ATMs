@@ -1104,10 +1104,11 @@ UPDATE invitations SET expires_at=$2 WHERE institution_id=$1 AND id=$3 AND accep
 		}
 	}
 	if err := execSeed(ctx, tx, "pending signup request", `
-INSERT INTO signup_requests(id,institution_id,matric_no,email,status,created_at)
-VALUES($1,$2,'ECE-100-99','pending-signup@attendance.test','pending',$3)
-ON CONFLICT(id) DO NOTHING`,
-		seedID(801), institutionID, plan.now); err != nil {
+INSERT INTO signup_requests(id,institution_id,matric_no,email,status,created_at,department_id)
+VALUES($1,$2,'ECE-100-99','pending-signup@attendance.test','pending',$3,$4)
+ON CONFLICT(id) DO UPDATE SET department_id=EXCLUDED.department_id
+WHERE signup_requests.status='pending'`,
+		seedID(801), institutionID, plan.now, plan.departments[0].id); err != nil {
 		return false, err
 	}
 	for venueIndex, venue := range plan.venues {

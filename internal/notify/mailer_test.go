@@ -14,7 +14,7 @@ import (
 func TestNewMailerUsesLogMailerWhenKeyEmpty(t *testing.T) {
 	var output strings.Builder
 	logger := slog.New(slog.NewTextHandler(&output, nil))
-	mailer, err := NewMailer("", "", logger)
+	mailer, err := NewMailer("", "", "development", logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,14 @@ func TestResendMailerUsesAuthorizationAndHandlesFailures(t *testing.T) {
 
 func TestNewMailerRequiresSenderWithKey(t *testing.T) {
 	t.Parallel()
-	if _, err := NewMailer("provider-key", "", nil); err == nil {
+	if _, err := NewMailer("provider-key", "", "production", nil); err == nil {
 		t.Fatal("configured provider accepted missing sender")
+	}
+}
+
+func TestNewMailerDoesNotLogOutsideDevelopment(t *testing.T) {
+	t.Parallel()
+	if _, err := NewMailer("", "", "production", nil); err == nil {
+		t.Fatal("production accepted the log-only mailer")
 	}
 }
