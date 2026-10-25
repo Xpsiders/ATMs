@@ -2,17 +2,22 @@ x-app: &app
   build: .
   image: attendance-api
 
+# All values below read from the repository-root .env when present, falling back
+# to local-development defaults so `docker compose up` works out of the box.
+# To point at an external database, set DATABASE_URL in .env (and you can stop
+# relying on the bundled `postgres` service). For a real deployment prefer the
+# Render Blueprint (render.yaml); this stack is for local development.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: attendance
-      POSTGRES_USER: attendance
-      POSTGRES_PASSWORD: attendance
+      POSTGRES_DB: ${POSTGRES_DB:-attendance}
+      POSTGRES_USER: ${POSTGRES_USER:-attendance}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-attendance}
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U attendance -d attendance"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-attendance} -d ${POSTGRES_DB:-attendance}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -22,7 +27,7 @@ services:
   migrate:
     <<: *app
     environment:
-      DATABASE_URL: postgres://attendance:attendance@postgres:5432/attendance?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgres://attendance:attendance@postgres:5432/attendance?sslmode=disable}
     command: ["sh", "-c", "goose -dir /app/db/migrations postgres \"$$DATABASE_URL\" up"]
     depends_on:
       postgres:
@@ -31,7 +36,7 @@ services:
   seed:
     <<: *app
     environment:
-      DATABASE_URL: postgres://attendance:attendance@postgres:5432/attendance?sslmode=disable
+      DATABASE_URL: ${DATABASE_URL:-postgres://attendance:attendance@postgres:5432/attendance?sslmode=disable}
       TZ: Africa/Lagos
       SEED_ORIGIN_LAT: ${SEED_ORIGIN_LAT:-}
       SEED_ORIGIN_LNG: ${SEED_ORIGIN_LNG:-}
@@ -44,17 +49,19 @@ services:
   api:
     <<: *app
     environment:
-      APP_ENV: development
-      HTTP_ADDR: :8080
-      DATABASE_URL: postgres://attendance:attendance@postgres:5432/attendance?sslmode=disable
-      ALLOWED_ORIGIN: http://localhost:5173
-      JWT_SECRET: local-development-secret-change-before-deploy-123456
-      CODE_HMAC_SECRET: local-code-secret-change-before-deploy-123456
-      COOKIE_SAME_SITE: lax
-      COOKIE_SECURE: "false"
-      DEVICE_OFFLINE_SECONDS: 60
+      APP_ENV: ${APP_ENV:-development}
+      HTTP_ADDR: ${HTTP_ADDR:-:8080}
+      DATABASE_URL: ${DATABASE_URL:-postgres://attendance:attendance@postgres:5432/attendance?sslmode=disable}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-http://localhost:5173}
+      JWT_SECRET: ${JWT_SECRET:-local-development-secret-change-before-deploy-123456}
+      CODE_HMAC_SECRET: ${CODE_HMAC_SECRET:-local-code-secret-change-before-deploy-123456}
+      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-lax}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DEVICE_OFFLINE_SECONDS: ${DEVICE_OFFLINE_SECONDS:-60}
+      MAIL_API_KEY: ${MAIL_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-Campus Attendance <noreply@example.test>}
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,63 @@
+# Render Blueprint for the Campus Attendance API (backend + database).
+# Deploy by committing this file and creating a Blueprint in the Render dashboard
+# (New + -> Blueprint) pointed at this repo. Edit the placeholders marked EDIT.
+#
+# The frontend (attendance-web) is deployed separately from its own repo as a
+# Render Static Site; it is intentionally not defined here. After both are up,
+# set the cross-origin values:
+#   - here (API)  ALLOWED_ORIGIN    = the frontend's URL, e.g. https://attendance-web.onrender.com
+#   - frontend    VITE_API_BASE_URL = this API's URL,     e.g. https://attendance-api.onrender.com
+#
+# Each deploy runs migrations and then the seed. The seed is idempotent (it
+# upserts and preserves existing keys), so it is safe to re-run; it also prints
+# login credentials and newly created scanner keys to the deploy logs the first
+# time. Drop the "&& seed" from preDeployCommand if you later switch to real data.
+
+databases:
+  - name: attendance-db
+    databaseName: attendance
+    user: attendance
+    plan: free # EDIT: free expires after ~90 days; use a paid plan for anything lasting
+
+services:
+  - type: web
+    name: attendance-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /healthz
+    # Apply all migrations, then load the seed dataset, before each deploy goes live.
+    preDeployCommand: goose -dir /app/db/migrations postgres "$DATABASE_URL" up && seed
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: attendance-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAME_SITE
+        value: none # required: API and site are different origins, so the refresh cookie must be SameSite=None
+      - key: DEVICE_OFFLINE_SECONDS
+        value: "60"
+      - key: JWT_SECRET
+        generateValue: true # Render generates a long random value (>= 32 bytes)
+      - key: CODE_HMAC_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGIN
+        sync: false # EDIT in dashboard: the frontend's URL (exact, no trailing slash)
+      - key: MAIL_FROM
+        sync: false # EDIT: e.g. "Campus Attendance <noreply@yourdomain>"
+      - key: MAIL_API_KEY
+        sync: false # EDIT: transactional-email API key (leave blank only if email is not needed yet)
+      # --- seed placement (optional) ---
+      - key: TZ
+        value: Africa/Lagos
+      - key: SEED_VENUE_RADIUS_M
+        value: "150"
+      - key: SEED_ORIGIN_LAT
+        sync: false # EDIT: latitude of your real venue location, so check-ins work from there
+      - key: SEED_ORIGIN_LNG
+        sync: false # EDIT: longitude of your real venue location
+      # PORT is injected by Render and the app binds it automatically; no HTTP_ADDR needed.

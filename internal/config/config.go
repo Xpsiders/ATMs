@@ -27,7 +27,7 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:       envOr("HTTP_ADDR", ":8080"),
+		HTTPAddr:       httpAddr(),
 		DatabaseURL:    strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		AllowedOrigin:  strings.TrimSpace(os.Getenv("ALLOWED_ORIGIN")),
 		JWTSecret:      []byte(strings.TrimSpace(os.Getenv("JWT_SECRET"))),
@@ -102,4 +102,13 @@ func envOr(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// httpAddr prefers the PORT variable that hosts such as Render inject and expect
+// the service to bind, falling back to HTTP_ADDR and then the local default.
+func httpAddr() string {
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		return ":" + port
+	}
+	return envOr("HTTP_ADDR", ":8080")
 }
