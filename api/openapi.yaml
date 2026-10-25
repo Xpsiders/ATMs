@@ -649,8 +649,6 @@ paths:
         "400": {description: Request or reset code is invalid., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "429": {$ref: "#/components/responses/RateLimited"}
         "500": {$ref: "#/components/responses/InternalError"}
-        "500":
-          $ref: "#/components/responses/InternalError"
   /auth/signup-claim:
     post:
       operationId: startStudentClaim
@@ -1010,6 +1008,173 @@ paths:
         "409": {description: Import data changed after validation., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "422": {description: At least one row failed; no rows were committed., content: {application/json: {schema: {$ref: "#/components/schemas/StaffImportPreview"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
+  /users:
+    get:
+      operationId: listDirectoryUsers
+      summary: Search the scoped user directory for lecturer and administrator pickers
+      description: >-
+        Returns users within the caller's administrator authority: a department
+        admin sees only users in their department, a faculty admin only within
+        their faculty, and an institution admin only within their institution.
+        Callers without administrator authority receive 403.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive search over display name and email.
+          schema: {type: string}
+        - name: role
+          in: query
+          required: false
+          description: Filter to users holding this role.
+          schema: {type: string, enum: [student, lecturer, department_admin, faculty_admin, institution_admin]}
+        - name: department_id
+          in: query
+          required: false
+          description: Filter to users holding a role in this department.
+          schema: {type: string, format: uuid}
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Scoped, paginated directory users.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, has_more]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/DirectoryUser"}}
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  has_more: {type: boolean}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot read the user directory., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /devices:
+    post:
+      operationId: provisionDevice
+      summary: Provision a scanner and issue a one-time pairing code
+      description: >-
+        Registers a scanner for a venue and returns a short pairing code to flash
+        into the device firmware. The code is shown once; the firmware redeems it
+        at POST /device/pair to receive its permanent device key. Allowed for
+        administrators with authority over the venue's department, or for a
+        lecturer who teaches at the venue.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceProvisionRequest"
+      responses:
+        "201": {description: Scanner provisioned; pairing code shown once., content: {application/json: {schema: {$ref: "#/components/schemas/ProvisionedDevice"}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage devices in this scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+    get:
+      operationId: listDevices
+      summary: List scanners within the caller's scope
+      description: Returns scanners the caller may manage - within an administrator's department/faculty/institution authority, plus venues a lecturer teaches at.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Scoped, paginated scanners with health and pairing status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset, has_more]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/DeviceListItem"}}
+                  limit: {type: integer}
+                  offset: {type: integer}
+                  has_more: {type: boolean}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage devices in this scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /devices/{id}/pairing-code:
+    post:
+      operationId: regenerateDevicePairingCode
+      summary: Issue a fresh pairing code for a scanner
+      description: Replaces any outstanding pairing code without changing an already-paired key. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "201": {description: New pairing code shown once., content: {application/json: {schema: {$ref: "#/components/schemas/PairingCode"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Device not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /devices/{id}/rotate-key:
+    post:
+      operationId: rotateDeviceKey
+      summary: Invalidate a scanner's key and issue a new pairing code
+      description: Clears the current device key so the scanner must re-pair with the returned code before it can send data again. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "201": {description: Key rotated; new pairing code shown once., content: {application/json: {schema: {$ref: "#/components/schemas/PairingCode"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Device not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /devices/{id}:
+    delete:
+      operationId: revokeDevice
+      summary: Revoke (soft-disable) a scanner
+      description: Disables the scanner so its key is rejected immediately. The record is retained for audit and reporting. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "204": {description: Device revoked.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Device not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /devices/{id}/enrolments:
+    post:
+      operationId: enqueueDeviceEnrolment
+      summary: Queue a student for fingerprint enrolment on a scanner
+      description: Assigns the next device slot to the student and creates a pending enrolment task the scanner picks up from GET /device/tasks. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [student_record_id]
+              additionalProperties: false
+              properties:
+                student_record_id: {type: string, format: uuid}
+      responses:
+        "201": {description: Enrolment queued., content: {application/json: {schema: {$ref: "#/components/schemas/EnrolmentEnqueueResponse"}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Device or student record not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
   /signup-requests:
     get:
       operationId: listSignupRequests
@@ -1081,8 +1246,6 @@ paths:
         "403": {description: Requested role or scope is outside caller authority., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "409": {description: Role assignment already exists., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
-        "500":
-          $ref: "#/components/responses/InternalError"
   /checkins:
     post:
       operationId: createWebCheckin
@@ -1469,7 +1632,7 @@ paths:
               additionalProperties: false
               properties: {status: {type: string, enum: [approved, rejected]}}
       responses:
-        "200": {description: Request reviewed; approval creates the offering and assignment., content: {application/json: {schema: {type: object, properties: {id: {type: string, format: uuid}, status: {type: string}, offering_id: {type: string, format: uuid}}}}}
+        "200": {description: Request reviewed; approval creates the offering and assignment., content: {application/json: {schema: {type: object, properties: {id: {type: string, format: uuid}, status: {type: string}, offering_id: {type: string, format: uuid}}}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot review this request., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
@@ -1502,7 +1665,7 @@ paths:
                 student_ids: {type: array, minItems: 1, maxItems: 200, items: {type: string, format: uuid}}
                 status: {type: string, enum: [approved, rejected]}
       responses:
-        "200": {description: Per-student results., content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {type: object, required: [student_id], properties: {student_id: {type: string, format: uuid}, status: {type: string}, error_code: {type: string}}}}}}}}
+        "200": {description: Per-student results., content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {type: object, required: [student_id], properties: {student_id: {type: string, format: uuid}, status: {type: string}, error_code: {type: string}}}}}}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot review registrations for this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
@@ -1683,7 +1846,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [json, csv]
+            enum: [json, csv, pdf]
             default: json
       responses:
         "200":
@@ -1695,6 +1858,10 @@ paths:
             text/csv:
               schema:
                 type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
         "400":
           $ref: "#/components/responses/InvalidJSON"
         "401":
@@ -1741,7 +1908,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [json, csv]
+            enum: [json, csv, pdf]
             default: json
       responses:
         "200":
@@ -1753,6 +1920,10 @@ paths:
             text/csv:
               schema:
                 type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2276,12 +2447,15 @@ paths:
     delete:
       operationId: deleteCourse
       summary: Delete a course
+      description: Allowed for administrators with authority over the course's department. A course that still has offerings cannot be deleted; remove its offerings first.
       security: [{BearerAuth: []}]
       parameters: [{$ref: "#/components/parameters/ResourceId"}]
       responses:
         "204": {description: Course deleted.}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot manage this course., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Course not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "409": {description: Course still has offerings and cannot be deleted., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
   /offerings:
     get:
       operationId: listOfferings
@@ -2294,6 +2468,14 @@ paths:
     post:
       operationId: createOffering
       summary: Create a course offering
+      description: >-
+        An administrator over the course's department (department/faculty/
+        institution/platform admin), or a lecturer who owns the course's
+        department, creates the offering directly and receives 201. A lecturer
+        without department ownership instead files a teaching request for admin
+        review and receives 202. Administrators create the offering with no
+        coordinator and assign lecturers afterwards via PUT
+        /offerings/{id}/lecturers.
       security: [{BearerAuth: []}]
       requestBody:
         required: true
@@ -2307,7 +2489,18 @@ paths:
                 course_id: {type: string, format: uuid}
                 semester_id: {type: string, format: uuid}
                 level: {type: integer, minimum: 1}
-                registration_mode: {type: string, enum: [auto, open, approval, closed]}
+                registration_mode:
+                  type: string
+                  enum: [auto, open, approval, closed]
+                  description: >-
+                    How students join this offering. The two primary choices a
+                    frontend typically surfaces as a Self-register / Needs
+                    approval toggle are: open = students register themselves and
+                    are approved immediately; approval = students register and a
+                    lecturer or admin must approve each request. The advanced
+                    options are: auto = matching department-and-level students
+                    are enrolled automatically (at claim time); closed = no new
+                    registrations are accepted.
                 roster_policy: {type: string, enum: [registered_only, open]}
                 min_attendance_pct: {type: number, minimum: 0, maximum: 100}
                 late_counts_as_attended: {type: boolean}
@@ -2333,10 +2526,10 @@ paths:
                       venue_id: {type: string, format: uuid}
       responses:
         "201": {description: Offering created., content: {application/json: {schema: {$ref: "#/components/schemas/CatalogueItem"}}}}
-        "202": {description: Teaching request created because the course belongs to another department., content: {application/json: {schema: {type: object, required: [status, teaching_request_id], properties: {status: {type: string, enum: [pending]}, teaching_request_id: {type: string, format: uuid}}}}}}
+        "202": {description: Teaching request created because the lecturer does not own the course's department., content: {application/json: {schema: {type: object, required: [status, teaching_request_id], properties: {status: {type: string, enum: [pending]}, teaching_request_id: {type: string, format: uuid}}}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot create an offering for this course., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Caller is neither an administrator over the course's department nor a lecturer, so cannot create an offering for this course., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
   /offerings/{id}:
     get:
       operationId: getOffering
@@ -2538,7 +2731,7 @@ paths:
       security: [{BearerAuth: []}]
       parameters: [{$ref: "#/components/parameters/ResourceId"}]
       responses:
-        "200": {description: Assigned lecturer records., content: {application/json: {schema: {type: array, items: {type: object}}}}}
+        "200": {description: Assigned lecturer records., content: {application/json: {schema: {type: array, items: {$ref: "#/components/schemas/OfferingLecturer"}}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot manage this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
     put:
@@ -2702,10 +2895,18 @@ paths:
             schema:
               type: object
               required: [status]
+              additionalProperties: false
               properties:
                 status:
                   type: string
                   enum: [done, failed]
+                template:
+                  type: string
+                  description: >-
+                    Base64-encoded fingerprint template exported from the sensor.
+                    Send it with status=done so the backend stores it centrally
+                    and other scanners can recognise this student (multi-venue).
+                    Optional; omit to keep the print local to this sensor only.
       responses:
         "204":
           description: Enrolment task completed.
@@ -2719,6 +2920,118 @@ paths:
           $ref: "#/components/responses/InvalidDeviceKey"
         "404":
           description: Pending task not found for this device.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /device/pair:
+    post:
+      operationId: pairDevice
+      summary: Redeem a pairing code for a permanent device key
+      description: >-
+        Called once by scanner firmware on first boot with the pairing code that
+        was flashed into the image. Returns the permanent device key the firmware
+        stores and sends as X-Device-Key on all later requests. The code is
+        single-use and expires. No device key is required to call this route.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pairing_code]
+              additionalProperties: false
+              properties:
+                pairing_code:
+                  type: string
+                  description: The pairing code, accepted in any casing or grouping.
+      responses:
+        "200":
+          description: Device paired; permanent key returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicePairResponse"
+        "400":
+          $ref: "#/components/responses/InvalidJSON"
+        "401":
+          description: Pairing code is invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /device/status:
+    post:
+      operationId: recordDeviceStatus
+      summary: Report scanner health telemetry
+      description: Updates the scanner's firmware version, battery, pending offline-queue depth, and free storage. All fields are optional; only supplied fields are updated.
+      security:
+        - DeviceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceStatusRequest"
+      responses:
+        "204":
+          description: Status recorded.
+        "400":
+          description: Invalid JSON or telemetry value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/InvalidDeviceKey"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /device/templates/sync:
+    post:
+      operationId: syncDeviceTemplates
+      summary: Load the session roster's fingerprint templates onto the scanner
+      description: >-
+        Returns the central fingerprint templates for the roster of the session
+        currently open at this scanner's venue (or the session_id given), each
+        with the integer slot position the scanner should load it into. The
+        backend provisions/persists that slot map, so later scans reference each
+        student by slot_number. Call this when a session starts; a scanner enrols
+        on any sensor but is recognised wherever its roster is synced.
+      security:
+        - DeviceKey: []
+      parameters:
+        - name: session_id
+          in: query
+          required: false
+          description: The session whose roster to load. Defaults to the session currently open at the device's venue.
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Roster templates and their slot positions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceTemplateSync"
+        "400":
+          description: Invalid session_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/InvalidDeviceKey"
+        "409":
+          description: No open session at this device's venue (and no session_id given).
           content:
             application/json:
               schema:
@@ -2859,6 +3172,29 @@ components:
           type: integer
           minimum: 1
           maximum: 1000
+    OfferingLecturer:
+      type: object
+      required: [id, display_name, email]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        email: {type: string, format: email}
+    DirectoryUser:
+      type: object
+      required: [id, display_name, email, roles]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        email: {type: string, format: email}
+        roles:
+          type: array
+          items:
+            type: object
+            required: [role, scope_type, scope_id]
+            properties:
+              role: {type: string}
+              scope_type: {type: string}
+              scope_id: {type: string, format: uuid, nullable: true}
     TimetableSlot:
       type: object
       required: [id, offering_id, venue_id, weekday, starts_at, ends_at]
@@ -3325,7 +3661,7 @@ components:
           format: uuid
     PendingEnrolment:
       type: object
-      required: [id, student_ref, slot_id]
+      required: [id, student_ref, slot_id, slot_number]
       properties:
         id:
           type: string
@@ -3335,14 +3671,20 @@ components:
         slot_id:
           type: string
           format: uuid
+        slot_number:
+          description: The integer sensor position (1-based) to enrol this student into. Null only if the task has no assigned slot.
+          oneOf:
+            - {type: integer, minimum: 1}
+            - {type: "null"}
     DeviceScanRequest:
       type: object
-      required: [slot_id, confidence]
+      required: [slot_number, confidence]
       additionalProperties: false
       properties:
-        slot_id:
-          type: string
-          format: uuid
+        slot_number:
+          type: integer
+          minimum: 1
+          description: The integer sensor position the fingerprint matched, as assigned by enrolment or template sync.
         confidence:
           type: number
           minimum: 0
@@ -3350,6 +3692,7 @@ components:
         client_scanned_at:
           type: string
           format: date-time
+          description: Omit for a live scan; set to the capture time (RFC3339) only when flushing a queued offline scan.
     DeviceScanResponse:
       type: object
       properties:
@@ -3363,6 +3706,125 @@ components:
           type: boolean
         error_code:
           type: string
+    DeviceProvisionRequest:
+      type: object
+      required: [venue_id, name]
+      additionalProperties: false
+      properties:
+        venue_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 120
+    PairingCode:
+      type: object
+      required: [device_id, pairing_code, pairing_code_expires_at]
+      description: A one-time pairing code shown to the administrator exactly once.
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        pairing_code:
+          type: string
+          description: Short code to flash into the scanner firmware, e.g. "K7QF-2M9X".
+        pairing_code_expires_at:
+          type: string
+          format: date-time
+    ProvisionedDevice:
+      type: object
+      required: [device, pairing]
+      properties:
+        device:
+          $ref: "#/components/schemas/DeviceListItem"
+        pairing:
+          $ref: "#/components/schemas/PairingCode"
+    DeviceListItem:
+      type: object
+      required: [id, name, venue_id, venue_name, status]
+      description: >-
+        A scanner summary. status is "unpaired" (no key yet, awaiting pairing),
+        "active" (paired and usable), or "revoked" (soft-disabled). The pairing
+        code itself is never returned here, only its expiry when one is outstanding.
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        venue_id: {type: string, format: uuid}
+        venue_name: {type: string}
+        department_id:
+          oneOf:
+            - {type: string, format: uuid}
+            - {type: "null"}
+        status: {type: string, enum: [unpaired, active, revoked]}
+        last_seen_at:
+          oneOf:
+            - {type: string, format: date-time}
+            - {type: "null"}
+        paired_at:
+          oneOf:
+            - {type: string, format: date-time}
+            - {type: "null"}
+        firmware_version:
+          oneOf:
+            - {type: string}
+            - {type: "null"}
+        battery_percent:
+          oneOf:
+            - {type: integer, minimum: 0, maximum: 100}
+            - {type: "null"}
+        pending_queue_depth:
+          oneOf:
+            - {type: integer, minimum: 0}
+            - {type: "null"}
+        status_reported_at:
+          oneOf:
+            - {type: string, format: date-time}
+            - {type: "null"}
+        pairing_code_expires_at:
+          oneOf:
+            - {type: string, format: date-time}
+            - {type: "null"}
+    DevicePairResponse:
+      type: object
+      required: [device_key, device_id, institution_id, venue_id]
+      properties:
+        device_key:
+          type: string
+          description: The permanent key the firmware stores and sends as X-Device-Key.
+        device_id: {type: string, format: uuid}
+        institution_id: {type: string, format: uuid}
+        venue_id: {type: string, format: uuid}
+    DeviceStatusRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        firmware_version: {type: string}
+        battery_percent: {type: integer, minimum: 0, maximum: 100}
+        pending_queue_depth: {type: integer, minimum: 0}
+        free_storage_bytes: {type: integer, format: int64, minimum: 0}
+    EnrolmentEnqueueResponse:
+      type: object
+      required: [task_id, slot_number, status]
+      properties:
+        task_id: {type: string, format: uuid}
+        slot_number: {type: integer, minimum: 1}
+        status: {type: string, enum: [pending]}
+    DeviceTemplateSync:
+      type: object
+      required: [session_id, slots, server_time]
+      properties:
+        session_id: {type: string, format: uuid}
+        server_time: {type: string, format: date-time}
+        slots:
+          type: array
+          items:
+            type: object
+            required: [slot_number, student_record_id, student_ref, template]
+            properties:
+              slot_number: {type: integer, minimum: 1, description: Sensor position to load this template into.}
+              student_record_id: {type: string, format: uuid}
+              student_ref: {type: string, description: The student's matric number, for display/logging.}
+              template: {type: string, description: Base64-encoded fingerprint template to load into the sensor at slot_number.}
   responses:
     InvalidJSON:
       description: Request JSON is invalid or contains unknown fields.

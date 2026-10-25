@@ -22,7 +22,7 @@ WHERE institution_id = $1 AND offering_id = $2 AND student_record_id = $3;
 
 -- name: CreateCourseRegistration :one
 INSERT INTO course_registrations (institution_id, offering_id, student_record_id, status, approved_at)
-VALUES ($1, $2, $3, $4, CASE WHEN $4 = 'approved' THEN $5 ELSE NULL END)
+VALUES ($1, $2, $3, $4, CASE WHEN $4 = 'approved' THEN $5::timestamptz ELSE NULL END)
 ON CONFLICT (institution_id, offering_id, student_record_id) DO UPDATE
 SET status = CASE
     WHEN course_registrations.status = 'rejected' THEN EXCLUDED.status
@@ -49,7 +49,7 @@ LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 -- name: SetCourseRegistrationStatus :one
 UPDATE course_registrations
 SET status = $4,
-    approved_at = CASE WHEN $4 = 'approved' THEN $5 ELSE NULL END
+    approved_at = CASE WHEN $4 = 'approved' THEN $5::timestamptz ELSE NULL END
 WHERE institution_id = $1 AND offering_id = $2 AND student_record_id = $3
   AND status = 'pending'
 RETURNING status;

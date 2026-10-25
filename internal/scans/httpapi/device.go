@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"math"
@@ -20,6 +21,8 @@ import (
 type DeviceStore interface {
 	LoadDeviceByKey(context.Context, []byte) (scans.Device, bool, error)
 	TouchDeviceHeartbeat(context.Context, scans.Device, time.Time) error
+	RecordDeviceStatus(context.Context, scans.Device, scans.DeviceStatus, time.Time) error
+	SyncDeviceTemplates(context.Context, scans.Device, string) (scans.TemplateSync, error)
 	scans.TaskStore
 }
 
@@ -96,6 +99,78 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.Post("/device/scans", h.scan)
 	router.Post("/device/scans/batch", h.batch)
 	router.Post("/device/enrolments/{id}/complete", h.completeEnrolment)
+	router.Post("/device/status", h.status)
+	router.Post("/device/templates/sync", h.syncTemplates)
+}
+
+func (h *Handler) syncTemplates(w http.ResponseWriter, r *http.Request) {
+	device, ok := DeviceFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "device_auth_required", "A device key is required", nil)
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID != "" {
+		if _, err := db.ParseUUID(sessionID); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "session_id is invalid", nil)
+			return
+		}
+	}
+	result, err := h.store.SyncDeviceTemplates(r.Context(), device, sessionID)
+	if errors.Is(err, scans.ErrNoActiveSession) {
+		httpx.WriteError(w, http.StatusConflict, "no_active_session", "There is no open session at this device venue", nil)
+		return
+	}
+	if err != nil {
+		slog.ErrorContext(r.Context(), "sync device templates failed", "device_id", device.ID, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to sync device templates", nil)
+		return
+	}
+	result.ServerTime = h.clock.Now().UTC().Format(time.RFC3339Nano)
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+type statusRequest struct {
+	FirmwareVersion   *string `json:"firmware_version"`
+	BatteryPercent    *int    `json:"battery_percent"`
+	PendingQueueDepth *int    `json:"pending_queue_depth"`
+	FreeStorageBytes  *int64  `json:"free_storage_bytes"`
+}
+
+func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	device, ok := DeviceFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "device_auth_required", "A device key is required", nil)
+		return
+	}
+	var request statusRequest
+	if err := httpx.DecodeJSON(w, r, &request); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if request.BatteryPercent != nil && (*request.BatteryPercent < 0 || *request.BatteryPercent > 100) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "battery_percent must be between 0 and 100", nil)
+		return
+	}
+	if request.PendingQueueDepth != nil && *request.PendingQueueDepth < 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "pending_queue_depth must not be negative", nil)
+		return
+	}
+	if request.FreeStorageBytes != nil && *request.FreeStorageBytes < 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "free_storage_bytes must not be negative", nil)
+		return
+	}
+	if err := h.store.RecordDeviceStatus(r.Context(), device, scans.DeviceStatus{
+		FirmwareVersion:   request.FirmwareVersion,
+		BatteryPercent:    request.BatteryPercent,
+		PendingQueueDepth: request.PendingQueueDepth,
+		FreeStorageBytes:  request.FreeStorageBytes,
+	}, h.clock.Now().UTC()); err != nil {
+		slog.ErrorContext(r.Context(), "record device status failed", "device_id", device.ID, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to record device status", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) tasks(w http.ResponseWriter, r *http.Request) {
@@ -140,13 +215,13 @@ func matchesETag(headers []string, etag string) bool {
 }
 
 type scanRequest struct {
-	SlotID          string     `json:"slot_id" validate:"required,uuid"`
-	Confidence      *float64   `json:"confidence" validate:"required,gte=0,lte=1"`
+	SlotNumber      *int       `json:"slot_number"`
+	Confidence      *float64   `json:"confidence"`
 	ClientScannedAt *time.Time `json:"client_scanned_at"`
 }
 
 func (request scanRequest) item() (scans.ScanItem, string) {
-	if _, err := db.ParseUUID(request.SlotID); err != nil {
+	if request.SlotNumber == nil || *request.SlotNumber < 1 {
 		return scans.ScanItem{}, "invalid_slot"
 	}
 	if request.Confidence == nil || math.IsNaN(*request.Confidence) ||
@@ -154,7 +229,7 @@ func (request scanRequest) item() (scans.ScanItem, string) {
 		return scans.ScanItem{}, "invalid_confidence"
 	}
 	return scans.ScanItem{
-		SlotID: request.SlotID, Confidence: *request.Confidence, ClientScannedAt: request.ClientScannedAt,
+		SlotNumber: *request.SlotNumber, Confidence: *request.Confidence, ClientScannedAt: request.ClientScannedAt,
 	}, ""
 }
 
@@ -233,7 +308,8 @@ func (h *Handler) completeEnrolment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Status string `json:"status" validate:"required,oneof=done failed"`
+		Status   string `json:"status" validate:"required,oneof=done failed"`
+		Template string `json:"template"`
 	}
 	if err := httpx.DecodeJSON(w, r, &request); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
@@ -243,7 +319,16 @@ func (h *Handler) completeEnrolment(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Status must be done or failed", nil)
 		return
 	}
-	err := h.store.CompleteEnrolment(r.Context(), device.InstitutionID, device.ID, taskID, request.Status, h.clock.Now().UTC())
+	var template []byte
+	if request.Template != "" {
+		decoded, err := base64.StdEncoding.DecodeString(request.Template)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "template must be base64-encoded", nil)
+			return
+		}
+		template = decoded
+	}
+	err := h.store.CompleteEnrolment(r.Context(), device.InstitutionID, device.ID, taskID, request.Status, template, h.clock.Now().UTC())
 	if errors.Is(err, scans.ErrEnrolmentTaskNotFound) {
 		httpx.WriteError(w, http.StatusNotFound, "enrolment_not_found", "Pending enrolment was not found", nil)
 		return

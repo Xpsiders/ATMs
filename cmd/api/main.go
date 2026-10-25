@@ -21,6 +21,7 @@ import (
 	"attendance-api/internal/config"
 	"attendance-api/internal/db"
 	"attendance-api/internal/db/dbgen"
+	"attendance-api/internal/devices"
 	"attendance-api/internal/httpx"
 	studentimports "attendance-api/internal/imports"
 	importshttp "attendance-api/internal/imports/httpapi"
@@ -166,6 +167,16 @@ func main() {
 		logger.Error("configure role assignment handler", "error", err)
 		os.Exit(1)
 	}
+	directoryService, err := auth.NewDirectoryService(refreshStore)
+	if err != nil {
+		logger.Error("configure directory service", "error", err)
+		os.Exit(1)
+	}
+	directoryHandler, err := auth.NewDirectoryHandler(directoryService)
+	if err != nil {
+		logger.Error("configure directory handler", "error", err)
+		os.Exit(1)
+	}
 	checkinStore, err := checkinpostgres.NewPostgresStore(queries)
 	if err != nil {
 		logger.Error("configure check-in store", "error", err)
@@ -197,7 +208,7 @@ func main() {
 		logger.Error("configure session handler", "error", err)
 		os.Exit(1)
 	}
-	scanStore, err := scanpostgres.NewStore(queries)
+	scanStore, err := scanpostgres.NewStore(pool, queries)
 	if err != nil {
 		logger.Error("configure device scan store", "error", err)
 		os.Exit(1)
@@ -210,6 +221,21 @@ func main() {
 	scanHandler, err := scanhttp.NewHandler(scanService, scanStore, systemClock)
 	if err != nil {
 		logger.Error("configure device scan handler", "error", err)
+		os.Exit(1)
+	}
+	deviceStore, err := devices.NewPostgresStore(pool)
+	if err != nil {
+		logger.Error("configure device management store", "error", err)
+		os.Exit(1)
+	}
+	deviceService, err := devices.NewService(deviceStore, systemClock)
+	if err != nil {
+		logger.Error("configure device management service", "error", err)
+		os.Exit(1)
+	}
+	deviceHandler, err := devices.NewHandler(deviceService)
+	if err != nil {
+		logger.Error("configure device management handler", "error", err)
 		os.Exit(1)
 	}
 	reportStore, err := reportspostgres.NewStore(pool, queries)
@@ -303,11 +329,16 @@ func main() {
 			invitationHandler.RegisterAuthenticatedRoutes(userRouter)
 			signupRequestHandler.RegisterRoutes(userRouter)
 			roleAssignmentHandler.RegisterRoutes(userRouter)
+			directoryHandler.RegisterRoutes(userRouter)
 			catalogueHandler.RegisterRoutes(userRouter)
 			registrationHandler.RegisterRoutes(userRouter)
 			studentPortalHandler.RegisterRoutes(userRouter)
 			importHandler.RegisterRoutes(userRouter)
 			reportHandler.RegisterRoutes(userRouter)
+			deviceHandler.RegisterAdminRoutes(userRouter)
+		})
+		router.With(httpx.RateLimitByIP(20, time.Minute)).Group(func(pairingRouter chi.Router) {
+			deviceHandler.RegisterPairingRoutes(pairingRouter)
 		})
 		router.With(auth.UserAuth(tokens), httpx.RateLimitByIP(20, time.Minute),
 			auth.UserRateLimit(10, time.Minute)).Post("/checkins", checkinHandler.ServeHTTP)

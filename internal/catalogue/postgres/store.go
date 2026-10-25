@@ -15,6 +15,7 @@ import (
 	"attendance-api/internal/rbac"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -763,14 +764,53 @@ func (s *Store) Delete(ctx context.Context, institutionID, actorID string, resou
 		}
 		return nil
 	}
+	if resource == catalogue.Courses {
+		actor, err := db.ParseUUID(actorID)
+		if err != nil {
+			return err
+		}
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin course deletion: %w", err)
+		}
+		defer tx.Rollback(ctx)
+		tag, err := tx.Exec(ctx, "DELETE FROM courses WHERE institution_id=$1 AND id=$2", tenant, itemID)
+		if err != nil {
+			if isForeignKeyViolation(err) {
+				return catalogue.ErrResourceInUse
+			}
+			return fmt.Errorf("delete course: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return catalogue.ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
+			VALUES ($1,$2,'course.deleted','course',$3,'{}'::jsonb)`, tenant, actor, itemID); err != nil {
+			return fmt.Errorf("audit course deletion: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit course deletion: %w", err)
+		}
+		return nil
+	}
 	tag, err := s.pool.Exec(ctx, "DELETE FROM "+config.table+" WHERE institution_id=$1 AND id=$2", tenant, itemID)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			return catalogue.ErrResourceInUse
+		}
 		return fmt.Errorf("delete %s: %w", resource, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return catalogue.ErrNotFound
 	}
 	return nil
+}
+
+// isForeignKeyViolation reports whether err is a PostgreSQL foreign-key
+// violation (SQLSTATE 23503), raised when a row is still referenced by others.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 func (s *Store) CanManage(ctx context.Context, institutionID, userID string, resource catalogue.Resource, id string, fields map[string]any) (bool, error) {

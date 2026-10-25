@@ -11,6 +11,9 @@ var (
 	ErrNotFound       = errors.New("catalogue item not found")
 	ErrInvalidRequest = errors.New("catalogue request is invalid")
 	ErrForbidden      = errors.New("catalogue operation is not permitted")
+	// ErrResourceInUse is returned when a resource cannot be deleted because other
+	// rows still reference it (for example a course that still has offerings).
+	ErrResourceInUse = errors.New("catalogue item is still referenced by other records")
 )
 
 type Resource string

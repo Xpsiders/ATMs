@@ -392,7 +392,17 @@ curl.exe -i "http://localhost:8080/sessions/SESSION_UUID/roster-sheet?format=csv
 The scanner outage and fixed-code conversion each produce an audit entry.
 During the outage, web check-ins are classified `web_only_unverified`; the
 report includes scanner coverage state and offline intervals. The roster sheet
-is ordered and paginated, and can be downloaded as JSON or CSV.
+is ordered and paginated. Both report routes support JSON, CSV, and PDF via the
+`format` query parameter. PDF output is limited to the requested page; use
+`limit` and `offset` for pagination, up to 200 rows per request.
+
+Save the PDF responses directly to files (omit `-i` so HTTP headers are not
+written into the PDF):
+
+```cmd
+curl.exe -sS "http://localhost:8080/sessions/SESSION_UUID/report?format=pdf&limit=200&offset=0" -H "Authorization: ******" --output session-report.pdf
+curl.exe -sS "http://localhost:8080/sessions/SESSION_UUID/roster-sheet?format=pdf&limit=200&offset=0" -H "Authorization: ******" --output session-roster.pdf
+```
 
 After ending the session, apply a scoped, audited bulk override. Each requested
 student receives an individual result, so a bad or out-of-scope student does

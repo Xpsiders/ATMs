@@ -18,6 +18,19 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+const claimOutboxQuery = `WITH expired AS (
+	UPDATE email_outbox SET status='pending', locked_at=NULL
+	WHERE status='sending' AND locked_at < $1::timestamptz - interval '5 minutes'
+), candidates AS (
+	SELECT id FROM email_outbox
+	WHERE status='pending' AND available_at <= $1 AND attempts < $2
+	ORDER BY available_at, created_at, id
+	FOR UPDATE SKIP LOCKED LIMIT $3
+)
+UPDATE email_outbox e SET status='sending', locked_at=$1, attempts=e.attempts+1
+FROM candidates c WHERE e.id=c.id
+RETURNING e.id::text,e.recipient,e.subject,e.body,e.attempts`
+
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("database pool is required")
@@ -42,18 +55,7 @@ func (s *Store) Claim(ctx context.Context, now time.Time, limit int) ([]notify.O
 	if limit < 1 || limit > notify.OutboxBatchSize {
 		return nil, errors.New("email outbox claim limit is invalid")
 	}
-	rows, err := s.pool.Query(ctx, `WITH expired AS (
-		UPDATE email_outbox SET status='pending', locked_at=NULL
-		WHERE status='sending' AND locked_at < $1 - interval '5 minutes'
-	), candidates AS (
-		SELECT id FROM email_outbox
-		WHERE status='pending' AND available_at <= $1 AND attempts < $2
-		ORDER BY available_at, created_at, id
-		FOR UPDATE SKIP LOCKED LIMIT $3
-	)
-	UPDATE email_outbox e SET status='sending', locked_at=$1, attempts=e.attempts+1
-	FROM candidates c WHERE e.id=c.id
-	RETURNING e.id::text,e.recipient,e.subject,e.body,e.attempts`, now.UTC(), notify.OutboxMaxTries, limit)
+	rows, err := s.pool.Query(ctx, claimOutboxQuery, now.UTC(), notify.OutboxMaxTries, limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim email outbox rows: %w", err)
 	}

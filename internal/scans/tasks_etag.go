@@ -22,6 +22,7 @@ type Enrolment struct {
 	ID         string `json:"id"`
 	StudentRef string `json:"student_ref"`
 	SlotID     string `json:"slot_id"`
+	SlotNumber *int   `json:"slot_number"`
 }
 
 func TasksETag(tasks Tasks) (string, error) {

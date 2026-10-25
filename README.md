@@ -98,6 +98,63 @@ management, scoped venues and administrator role assignment, registration,
 check-in, session, reports, roster, overrides, and device operations. The
 database-backed workflows still need manual verification.
 
+### Offering registration mode
+
+When creating an offering (`POST /offerings`), `registration_mode` decides how
+students join. A frontend can present the two common choices as a single
+toggle:
+
+- **Self-register** → send `"open"`: students register themselves and are
+  approved immediately.
+- **Needs approval** → send `"approval"`: students register, the request is
+  `pending`, and a lecturer/admin approves it via `GET /registration-approvals`
+  and the review endpoint.
+
+Two advanced modes also exist: `"auto"` (matching department-and-level students
+are enrolled automatically at claim time) and `"closed"` (no new registrations).
+The server behavior is unchanged by how the UI labels these; see the
+`registration_mode` description in `api/openapi.yaml`.
+
+### Device onboarding
+
+Fingerprint scanners authenticate with an `X-Device-Key` header, never a user
+token. A scanner is brought online without any keypad or typing on the device:
+
+1. An administrator provisions the scanner with `POST /devices` (scoped to the
+   caller's authority over the venue's department). The response carries a short
+   one-time **pairing code**, shown only once.
+2. That pairing code is flashed into the firmware image (a config constant); no
+   human enters it on the device.
+3. On first boot the firmware calls `POST /device/pair` with the code and
+   receives its permanent device key, which it stores and sends thereafter.
+4. From then on the scanner runs automatically: it polls `GET /device/tasks`
+   for the session currently open **at its venue** (no per-class code needed),
+   pushes check-ins via `POST /device/scans` (and `POST /device/scans/batch`
+   for late offline sync), completes queued fingerprint enrolments, and reports
+   health with `POST /device/status`.
+
+To enrol students, an administrator (or a lecturer at the venue) queues each one
+with `POST /devices/{id}/enrolments`; the scanner picks the task up from
+`GET /device/tasks` (which includes the integer `slot_number` to use) and
+confirms with `POST /device/enrolments/{id}/complete`, sending the sensor's
+exported fingerprint `template`. Templates are stored centrally, so a scanner at
+another venue can recognise the same student: when a session starts, that scanner
+calls `POST /device/templates/sync` to load the session roster's templates into
+its sensor at the returned slot positions. Fingerprint scans then identify the
+student by `slot_number`.
+Administrators can reissue a pairing code (`POST /devices/{id}/pairing-code`),
+rotate a key so the device must re-pair (`POST /devices/{id}/rotate-key`), or
+revoke a scanner (`DELETE /devices/{id}`), and list scanners with their status
+and health via `GET /devices`.
+
+Device management is allowed for administrators with authority over the venue's
+department (department admins in their department, faculty admins in their
+faculty, institution admins institution-wide) and for lecturers at venues they
+teach at — a lecturer who is assigned to an offering timetabled at a venue may
+provision, list, re-pair, rotate, revoke, and enrol students on scanners at that
+venue. Viewing the resulting attendance needs no device role: an assigned
+lecturer already sees their sessions' live counts, report, roster, and overrides.
+
 ## Identity and staff administration
 
 - Unknown-matric signup requests include `department_id`; a department-scoped

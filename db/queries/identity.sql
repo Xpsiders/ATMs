@@ -847,14 +847,18 @@ WITH target AS (
 access AS (
     SELECT
       EXISTS (
-        SELECT 1 FROM course_offerings AS o
+        SELECT 1 FROM lecture_sessions AS ls
+        JOIN course_offerings AS o
+          ON o.institution_id = ls.institution_id AND o.id = ls.offering_id
         JOIN offering_lecturers AS ol
           ON ol.institution_id = o.institution_id AND ol.offering_id = o.id
-        WHERE o.institution_id = $1 AND o.id = $2 AND ol.lecturer_user_id = $3
+        WHERE ls.institution_id = $1 AND ls.id = $2 AND ol.lecturer_user_id = $3
       ) AS lecturer,
       EXISTS (
-        SELECT 1 FROM course_offerings AS o
-        WHERE o.institution_id = $1 AND o.id = $2 AND o.coordinator_user_id = $3
+        SELECT 1 FROM lecture_sessions AS ls
+        JOIN course_offerings AS o
+          ON o.institution_id = ls.institution_id AND o.id = ls.offering_id
+        WHERE ls.institution_id = $1 AND ls.id = $2 AND o.coordinator_user_id = $3
       ) AS coordinator,
       EXISTS (
         SELECT 1 FROM role_assignments AS ra
@@ -897,14 +901,14 @@ SELECT
       )
       ELSE NULL::uuid
     END AS department_filter,
-    CASE
+    COALESCE(CASE
       WHEN lecturer OR coordinator OR institution_admin OR faculty_admin OR owning_department_admin
         OR general_department_admin THEN NULL::uuid
       ELSE (
         SELECT sr.id FROM student_records AS sr
         WHERE sr.institution_id = $1 AND sr.claimed_by_user_id = $3 LIMIT 1
       )
-    END::text AS student_filter,
+    END::text, '') AS student_filter,
     (lecturer OR coordinator OR institution_admin OR faculty_admin OR owning_department_admin
       OR general_department_admin)::boolean AS can_override
 FROM access;

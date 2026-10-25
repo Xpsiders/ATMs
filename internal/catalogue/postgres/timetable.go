@@ -131,7 +131,7 @@ func (s *Store) SaveTimetable(ctx context.Context, institutionIDText, userIDText
 		return catalogue.TimetableSlot{}, fmt.Errorf("save timetable slot: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
-		VALUES ($1,$2,$3,'timetable',$4,jsonb_build_object('offering_id',$5,'venue_id',$6,'weekday',$7))`,
+		VALUES ($1,$2,$3,'timetable',$4,jsonb_build_object('offering_id',$5::text,'venue_id',$6::text,'weekday',$7::int))`,
 		tenant, user, action, item.ID, item.OfferingID, item.VenueID, item.Weekday); err != nil {
 		return catalogue.TimetableSlot{}, fmt.Errorf("audit timetable change: %w", err)
 	}
@@ -171,7 +171,7 @@ func (s *Store) DeleteTimetable(ctx context.Context, institutionIDText, userIDTe
 		return catalogue.ErrSlotNotFound
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
-		VALUES ($1,$2,'timetable.deleted','timetable',$3,jsonb_build_object('offering_id',$4))`,
+		VALUES ($1,$2,'timetable.deleted','timetable',$3,jsonb_build_object('offering_id',$4::uuid))`,
 		tenant, user, slotID, offering); err != nil {
 		return fmt.Errorf("audit timetable deletion: %w", err)
 	}

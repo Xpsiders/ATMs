@@ -84,3 +84,61 @@ func TestRosterSheetCSVFormat(t *testing.T) {
 		t.Fatalf("roster response=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }
+
+func TestSessionReportPDFFormat(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet,
+		"/sessions/7d4e915a-4377-4c8d-b6a8-762c7beebaa1/report?format=pdf", nil)
+	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{
+		Identity: auth.Identity{InstitutionID: "c55f010f-f53c-4408-ae53-d23d04838916", UserID: "e8725090-009e-4f71-9cf9-847ce5a0256a"},
+	}))
+	response := httptest.NewRecorder()
+	newRouter(t).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/pdf" ||
+		response.Header().Get("Content-Disposition") != `attachment; filename="session-report.pdf"` ||
+		!strings.HasPrefix(response.Body.String(), "%PDF-1.4") ||
+		!strings.Contains(response.Body.String(), "STUDENT ATTENDANCE REPORT") {
+		body := response.Body.String()
+		if len(body) > 40 {
+			body = body[:40]
+		}
+		t.Fatalf("report PDF response=%d headers=%v body prefix=%q", response.Code,
+			response.Header(), body)
+	}
+}
+
+func TestRosterSheetPDFFormat(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet,
+		"/sessions/7d4e915a-4377-4c8d-b6a8-762c7beebaa1/roster-sheet?format=pdf", nil)
+	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{
+		Identity: auth.Identity{InstitutionID: "c55f010f-f53c-4408-ae53-d23d04838916", UserID: "e8725090-009e-4f71-9cf9-847ce5a0256a"},
+	}))
+	response := httptest.NewRecorder()
+	newRouter(t).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/pdf" ||
+		response.Header().Get("Content-Disposition") != `attachment; filename="session-roster.pdf"` ||
+		!strings.HasPrefix(response.Body.String(), "%PDF-1.4") ||
+		!strings.Contains(response.Body.String(), "SESSION ATTENDANCE ROSTER") {
+		body := response.Body.String()
+		if len(body) > 40 {
+			body = body[:40]
+		}
+		t.Fatalf("roster PDF response=%d headers=%v body prefix=%q", response.Code,
+			response.Header(), body)
+	}
+}
+
+func TestReportFormatRejectsUnsupportedFormat(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet,
+		"/sessions/7d4e915a-4377-4c8d-b6a8-762c7beebaa1/report?format=docx", nil)
+	request = request.WithContext(auth.WithPrincipal(request.Context(), auth.Principal{
+		Identity: auth.Identity{InstitutionID: "c55f010f-f53c-4408-ae53-d23d04838916", UserID: "e8725090-009e-4f71-9cf9-847ce5a0256a"},
+	}))
+	response := httptest.NewRecorder()
+	newRouter(t).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "format must be json, csv, or pdf") {
+		t.Fatalf("unsupported report format response=%d %s", response.Code, response.Body.String())
+	}
+}

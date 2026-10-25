@@ -39,6 +39,54 @@ func TestBuildSeedPlanCoversFrontendDataset(t *testing.T) {
 	}
 }
 
+func TestSeedUsesHumanReadableUniqueNamesForStudentsAndLecturers(t *testing.T) {
+	t.Parallel()
+	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	studentUsers := make(map[string]string)
+	lecturerNames := make(map[string]bool)
+	lecturerCount := 0
+	for _, user := range plan.users {
+		switch user.role {
+		case "student":
+			studentUsers[user.id] = user.label
+		case "lecturer":
+			lecturerCount++
+			lecturerNames[user.label] = true
+			if strings.Contains(strings.ToLower(user.label), "lecturer") ||
+				strings.Contains(strings.ToLower(user.label), "engineering") ||
+				strings.Contains(strings.ToLower(user.label), "computer science") {
+				t.Errorf("lecturer display name contains a role or department label: %q", user.label)
+			}
+		}
+	}
+	if len(lecturerNames) != lecturerCount {
+		t.Fatalf("unique lecturer display names=%d, want %d (one per lecturer)", len(lecturerNames), lecturerCount)
+	}
+	if lecturerCount <= len(plan.departments) {
+		t.Fatalf("seeded lecturers=%d, want more than one per department for picker options", lecturerCount)
+	}
+
+	studentNames := make(map[string]bool, len(plan.students))
+	for _, student := range plan.students {
+		if student.name == "" || strings.Contains(strings.ToLower(student.name), "student") ||
+			strings.Contains(student.name, student.departmentID) {
+			t.Errorf("student has a non-human-readable display name %q", student.name)
+		}
+		if studentNames[student.name] {
+			t.Errorf("student display name is not unique: %q", student.name)
+		}
+		studentNames[student.name] = true
+		if student.userID != "" && studentUsers[student.userID] != student.name {
+			t.Errorf("claimed student account name %q does not match student record name %q",
+				studentUsers[student.userID], student.name)
+		}
+	}
+}
+
 func TestMetresToDegreeOffsetsAcrossLatitudes(t *testing.T) {
 	t.Parallel()
 	for _, latitude := range []float64{0, 45, 80} {
@@ -198,16 +246,25 @@ func TestSeedPlanRegistrationModesAndStaffAssignments(t *testing.T) {
 	modes := make(map[string]bool)
 	lecturers := make(map[string]bool)
 	staffNumbers := make(map[string]bool)
+	lecturerIDs := make(map[string]bool)
 	for _, offering := range plan.offerings {
 		modes[offering.mode] = true
 		lecturers[offering.lecturerID] = true
 	}
 	for _, user := range plan.users {
 		if user.role == "lecturer" {
-			staffNumbers[user.staffNo] = true
-			if !lecturers[user.id] {
-				t.Errorf("lecturer %s has no assigned offering", user.email)
+			if staffNumbers[user.staffNo] {
+				t.Errorf("duplicate lecturer staff number %q", user.staffNo)
 			}
+			staffNumbers[user.staffNo] = true
+			lecturerIDs[user.id] = true
+		}
+	}
+	// Every offering must be assigned to a real lecturer, but unassigned
+	// lecturers are allowed on purpose so the picker has spare options.
+	for lecturerID := range lecturers {
+		if !lecturerIDs[lecturerID] {
+			t.Errorf("offering assigned to non-lecturer user %s", lecturerID)
 		}
 	}
 	for _, mode := range []string{"auto", "open", "approval", "closed"} {
@@ -393,6 +450,16 @@ func TestSeedPlanTimetableRemainsValidLateInTheDay(t *testing.T) {
 	}
 }
 
+func TestLegacyOpenSessionCleanupIsTenantScopedAndIdempotent(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(closeLegacyOpenSessionQuery, "institution_id=$1") ||
+		!strings.Contains(closeLegacyOpenSessionQuery, "id=$2") ||
+		!strings.Contains(closeLegacyOpenSessionQuery, "ended_at IS NULL") ||
+		legacyOpenSessionID != "10000000-0000-4000-8000-000000001004" {
+		t.Fatal("legacy cleanup must only close the known open demo fixture")
+	}
+}
+
 func TestAttendanceFixturesCoverReportStatesAndBelowThreshold(t *testing.T) {
 	t.Parallel()
 	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
@@ -507,5 +574,31 @@ func TestSeedPlanIsDateRelativeAndDeterministic(t *testing.T) {
 	if first.academicStart.After(first.now) || first.academicEnd.Before(first.now) ||
 		first.semesterStart.After(first.now) || first.semesterEnd.Before(first.now) {
 		t.Fatal("current academic periods do not contain the supplied date")
+	}
+}
+
+func TestSeedPlanProvidesPriorAndCurrentSemesters(t *testing.T) {
+	t.Parallel()
+	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The current semester must contain today; the prior semester must be
+	// entirely in the past and precede the current one.
+	if plan.semesterStart.After(plan.now) || plan.semesterEnd.Before(plan.now) {
+		t.Fatalf("current semester %s..%s does not contain %s",
+			plan.semesterStart, plan.semesterEnd, plan.now)
+	}
+	if !plan.priorSemesterEnd.Before(plan.now) {
+		t.Fatalf("prior semester end %s is not before %s", plan.priorSemesterEnd, plan.now)
+	}
+	if !plan.priorSemesterEnd.Before(plan.semesterStart) {
+		t.Fatalf("prior semester %s..%s overlaps the current semester starting %s",
+			plan.priorSemesterStart, plan.priorSemesterEnd, plan.semesterStart)
+	}
+	// Both semesters must fall within the current academic session.
+	if plan.priorSemesterStart.Before(plan.academicStart) || plan.semesterEnd.After(plan.academicEnd) {
+		t.Fatalf("semesters fall outside the academic session %s..%s",
+			plan.academicStart, plan.academicEnd)
 	}
 }

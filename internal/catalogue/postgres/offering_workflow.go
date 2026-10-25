@@ -45,8 +45,10 @@ func (s *Store) CreateLecturerOffering(ctx context.Context, institutionIDText, u
 		return nil, fmt.Errorf("begin offering creation: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	var department pgtype.UUID
-	if err := tx.QueryRow(ctx, "SELECT department_id FROM courses WHERE institution_id=$1 AND id=$2", tenant, course).Scan(&department); err != nil {
+	var department, faculty pgtype.UUID
+	if err := tx.QueryRow(ctx, `SELECT d.id, d.faculty_id
+		FROM courses c JOIN departments d ON d.institution_id=c.institution_id AND d.id=c.department_id
+		WHERE c.institution_id=$1 AND c.id=$2`, tenant, course).Scan(&department, &faculty); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, catalogue.ErrNotFound
 		}
@@ -83,12 +85,32 @@ func (s *Store) CreateLecturerOffering(ctx context.Context, institutionIDText, u
 			return nil, catalogue.ErrInvalidRequest
 		}
 	}
-	var isLecturer, ownsCourse bool
+	var isLecturer, ownsCourse, isAdmin bool
 	if err := tx.QueryRow(ctx, `SELECT
 		EXISTS(SELECT 1 FROM role_assignments WHERE institution_id=$1 AND user_id=$2 AND role='lecturer'),
 		EXISTS(SELECT 1 FROM role_assignments WHERE institution_id=$1 AND user_id=$2 AND role='lecturer'
-			AND scope_type='department' AND department_id=$3)`, tenant, user, department).Scan(&isLecturer, &ownsCourse); err != nil {
-		return nil, fmt.Errorf("check lecturer department scope: %w", err)
+			AND scope_type='department' AND department_id=$3),
+		EXISTS(SELECT 1 FROM role_assignments WHERE institution_id=$1 AND user_id=$2 AND (
+			(role='department_admin' AND scope_type='department' AND department_id=$3)
+			OR (role='faculty_admin' AND scope_type='faculty' AND faculty_id=$4)
+			OR (role='institution_admin' AND scope_type='institution') OR role='platform_admin'))`,
+		tenant, user, department, faculty).Scan(&isLecturer, &ownsCourse, &isAdmin); err != nil {
+		return nil, fmt.Errorf("check offering management scope: %w", err)
+	}
+	// An administrator over the course's department may create the offering
+	// directly, with no coordinator, and assign lecturers afterwards. An owning
+	// lecturer also creates it directly, as its coordinator. A lecturer without
+	// department ownership instead files a teaching request for admin review;
+	// anyone else is forbidden.
+	if isAdmin && !ownsCourse {
+		offeringID, err := createOfferingTx(ctx, tx, tenant, user, pgtype.UUID{}, course, semester, input, lateCounts)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit administrator offering: %w", err)
+		}
+		return map[string]any{"status": "created", "id": offeringID.String(), "course_id": course.String(), "semester_id": semester.String()}, nil
 	}
 	if !isLecturer {
 		return nil, catalogue.ErrForbidden
@@ -105,7 +127,7 @@ func (s *Store) CreateLecturerOffering(ctx context.Context, institutionIDText, u
 			return nil, fmt.Errorf("create pending teaching request: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
-			VALUES ($1,$2,'teaching_request.created','teaching_request',$3,jsonb_build_object('course_id',$4))`,
+			VALUES ($1,$2,'teaching_request.created','teaching_request',$3,jsonb_build_object('course_id',$4::uuid))`,
 			tenant, user, requestID, course); err != nil {
 			return nil, fmt.Errorf("audit teaching request: %w", err)
 		}
@@ -254,7 +276,7 @@ func (s *Store) ReviewTeachingRequest(ctx context.Context, institutionIDText, us
 		return nil, fmt.Errorf("save teaching request decision: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
-		VALUES ($1,$2,'teaching_request.reviewed','teaching_request',$3,jsonb_build_object('status',$4,'offering_id',$5))`,
+		VALUES ($1,$2,'teaching_request.reviewed','teaching_request',$3,jsonb_build_object('status',$4::text,'offering_id',$5::uuid))`,
 		tenant, user, requestID, status, offering); err != nil {
 		return nil, fmt.Errorf("audit teaching request decision: %w", err)
 	}
@@ -270,6 +292,9 @@ func (s *Store) ReviewTeachingRequest(ctx context.Context, institutionIDText, us
 
 func createOfferingTx(ctx context.Context, tx pgx.Tx, tenant, actor, lecturer, course, semester pgtype.UUID, input catalogue.OfferingInput, lateCounts bool) (pgtype.UUID, error) {
 	var offering pgtype.UUID
+	// lecturer is the offering coordinator and first assigned lecturer. When it is
+	// not set (an administrator created the offering), the coordinator is left
+	// NULL and no lecturer is forced on; lecturers are assigned separately.
 	err := tx.QueryRow(ctx, `INSERT INTO course_offerings (
 		institution_id, course_id, semester_id, coordinator_user_id, level, registration_mode,
 		roster_policy, min_attendance_pct, late_counts_as_attended
@@ -279,9 +304,11 @@ func createOfferingTx(ctx context.Context, tx pgx.Tx, tenant, actor, lecturer, c
 	if err != nil {
 		return pgtype.UUID{}, fmt.Errorf("create course offering: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO offering_lecturers(institution_id, offering_id, lecturer_user_id)
-		VALUES ($1,$2,$3)`, tenant, offering, lecturer); err != nil {
-		return pgtype.UUID{}, fmt.Errorf("assign lecturer to offering: %w", err)
+	if lecturer.Valid {
+		if _, err := tx.Exec(ctx, `INSERT INTO offering_lecturers(institution_id, offering_id, lecturer_user_id)
+			VALUES ($1,$2,$3)`, tenant, offering, lecturer); err != nil {
+			return pgtype.UUID{}, fmt.Errorf("assign lecturer to offering: %w", err)
+		}
 	}
 	for _, target := range input.AutoTargets {
 		department, err := db.ParseUUID(target.DepartmentID)
@@ -308,7 +335,7 @@ func createOfferingTx(ctx context.Context, tx pgx.Tx, tenant, actor, lecturer, c
 		}
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
-		VALUES ($1,$2,'offering.created','course_offering',$3,jsonb_build_object('course_id',$4,'semester_id',$5))`,
+		VALUES ($1,$2,'offering.created','course_offering',$3,jsonb_build_object('course_id',$4::uuid,'semester_id',$5::uuid))`,
 		tenant, actor, offering, course, semester); err != nil {
 		return pgtype.UUID{}, fmt.Errorf("audit offering creation: %w", err)
 	}
@@ -336,7 +363,7 @@ func createTimetableSlotTx(ctx context.Context, tx pgx.Tx, tenant, actor, offeri
 		return fmt.Errorf("create timetable slot: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
-		VALUES ($1,$2,'timetable.created','timetable',$3,jsonb_build_object('offering_id',$4,'venue_id',$5,'weekday',$6))`,
+		VALUES ($1,$2,'timetable.created','timetable',$3,jsonb_build_object('offering_id',$4::uuid,'venue_id',$5::uuid,'weekday',$6::int))`,
 		tenant, actor, id, offering, venue, slot.Weekday); err != nil {
 		return fmt.Errorf("audit timetable creation: %w", err)
 	}

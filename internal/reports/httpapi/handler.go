@@ -74,7 +74,15 @@ func (h *Handler) sessionReport(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, r, err)
 		return
 	}
-	if r.URL.Query().Get("format") == "csv" {
+	switch r.URL.Query().Get("format") {
+	case "pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="session-report.pdf"`)
+		if err := reports.WriteReportPDF(w, page); err != nil {
+			slog.ErrorContext(r.Context(), "write attendance report PDF", "error", err)
+		}
+		return
+	case "csv":
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="session-report.csv"`)
 		if err := reports.WriteCSV(w, page); err != nil {
@@ -104,7 +112,15 @@ func (h *Handler) rosterSheet(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, r, err)
 		return
 	}
-	if r.URL.Query().Get("format") == "csv" {
+	switch r.URL.Query().Get("format") {
+	case "pdf":
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="session-roster.pdf"`)
+		if err := reports.WriteRosterPDF(w, page); err != nil {
+			slog.ErrorContext(r.Context(), "write roster sheet PDF", "error", err)
+		}
+		return
+	case "csv":
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="session-roster.csv"`)
 		if err := reports.WriteRosterCSV(w, page); err != nil {
@@ -190,8 +206,8 @@ func parseFilter(w http.ResponseWriter, r *http.Request) (reports.ReportFilter, 
 		}
 	}
 	format := r.URL.Query().Get("format")
-	if format != "" && format != "json" && format != "csv" {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "format must be json or csv", nil)
+	if format != "" && format != "json" && format != "csv" && format != "pdf" {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "format must be json, csv, or pdf", nil)
 		return reports.ReportFilter{}, false
 	}
 	if filter.Limit < 1 || filter.Limit > 200 || filter.Offset < 0 {

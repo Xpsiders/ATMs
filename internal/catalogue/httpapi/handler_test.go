@@ -15,16 +15,20 @@ import (
 )
 
 type endpointStore struct {
-	offerings        []map[string]any
-	listInstitution  string
-	listUser         string
-	listResource     catalogue.Resource
-	listFilters      map[string]string
-	venues           []map[string]any
-	venueTotal       int64
-	venueInstitution string
-	venueUser        string
-	venueErr         error
+	offerings           []map[string]any
+	listInstitution     string
+	listUser            string
+	listResource        catalogue.Resource
+	listFilters         map[string]string
+	venues              []map[string]any
+	venueTotal          int64
+	venueInstitution    string
+	venueUser           string
+	venueErr            error
+	lecturers           []map[string]any
+	canReadOffering     bool
+	lecturerInstitution string
+	lecturerOffering    string
 }
 
 func (s *endpointStore) List(_ context.Context, institutionID, userID, _ string, resource catalogue.Resource, filters map[string]string) ([]map[string]any, error) {
@@ -43,8 +47,8 @@ func (*endpointStore) Delete(context.Context, string, string, catalogue.Resource
 func (*endpointStore) CanManage(context.Context, string, string, catalogue.Resource, string, map[string]any) (bool, error) {
 	return false, errors.New("not implemented")
 }
-func (*endpointStore) CanReadOffering(context.Context, string, string, string) (bool, error) {
-	return false, errors.New("not implemented")
+func (s *endpointStore) CanReadOffering(context.Context, string, string, string) (bool, error) {
+	return s.canReadOffering, nil
 }
 func (*endpointStore) SetOfferingLecturers(context.Context, string, string, string, []string) error {
 	return errors.New("not implemented")
@@ -52,8 +56,9 @@ func (*endpointStore) SetOfferingLecturers(context.Context, string, string, stri
 func (*endpointStore) SetOfferingAutoTargets(context.Context, string, string, []catalogue.AutoTarget) error {
 	return errors.New("not implemented")
 }
-func (*endpointStore) OfferingLecturers(context.Context, string, string) ([]map[string]any, error) {
-	return nil, errors.New("not implemented")
+func (s *endpointStore) OfferingLecturers(_ context.Context, institutionID, offeringID string) ([]map[string]any, error) {
+	s.lecturerInstitution, s.lecturerOffering = institutionID, offeringID
+	return s.lecturers, nil
 }
 func (*endpointStore) OfferingAutoTargets(context.Context, string, string) ([]catalogue.AutoTarget, error) {
 	return nil, errors.New("not implemented")
@@ -176,5 +181,45 @@ func TestVenueListingDeniesCallerWithoutVenueRole(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestOfferingLecturersResponseIncludesIdentityFields(t *testing.T) {
+	t.Parallel()
+	const offeringID = "11111111-1111-1111-1111-111111111111"
+	store := &endpointStore{
+		canReadOffering: true,
+		lecturers: []map[string]any{{
+			"id":           "22222222-2222-2222-2222-222222222222",
+			"display_name": "Ada Lovelace",
+			"email":        "ada.lovelace@example.edu",
+		}},
+	}
+	router := testRouter(t, store)
+	request := httptest.NewRequest(http.MethodGet, "/offerings/"+offeringID+"/lecturers", nil)
+	request = withIdentity(request, auth.Identity{InstitutionID: "tenant", UserID: "lecturer"})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+	if store.lecturerInstitution != "tenant" || store.lecturerOffering != offeringID {
+		t.Fatalf("lecturer query scope = %q %q", store.lecturerInstitution, store.lecturerOffering)
+	}
+	var body []struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 1 {
+		t.Fatalf("expected one lecturer, got %d", len(body))
+	}
+	if body[0].ID != "22222222-2222-2222-2222-222222222222" ||
+		body[0].DisplayName != "Ada Lovelace" ||
+		body[0].Email != "ada.lovelace@example.edu" {
+		t.Fatalf("lecturer missing identity fields: %+v", body[0])
 	}
 }

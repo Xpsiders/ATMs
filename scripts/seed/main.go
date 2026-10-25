@@ -22,11 +22,38 @@ import (
 )
 
 const institutionID = "10000000-0000-4000-8000-000000000001"
+const legacyOpenSessionID = "10000000-0000-4000-8000-000000001004"
+const closeLegacyOpenSessionQuery = `UPDATE lecture_sessions SET ended_at=$3
+WHERE institution_id=$1 AND id=$2 AND ended_at IS NULL`
 
 const (
 	defaultOriginLatitude  = 6.5244
 	defaultOriginLongitude = 3.3792
 	defaultVenueRadius     = 150
+)
+
+var (
+	seedLecturerNames = []string{
+		"Dr. Ada Okafor",
+		"Mr. Tunde Bello",
+		"Prof. Ngozi Eze",
+		"Dr. Sola Adeyemi",
+		"Dr. Chinedu Nwosu",
+		"Mrs. Folake Ojo",
+		"Prof. Ibrahim Sani",
+		"Dr. Yusuf Danladi",
+		"Dr. Amaka Obi",
+		"Mr. Segun Afolabi",
+		"Dr. Halima Bako",
+		"Prof. Chidi Okeke",
+		"Mrs. Bisi Lawal",
+		"Dr. Emeka Udeh",
+	}
+	seedStudentFirstNames = []string{
+		"Amara", "Chika", "Emeka", "Femi", "Ifeoma", "Kemi",
+		"Kunle", "Mariam", "Nneka", "Olu", "Tari", "Zainab",
+	}
+	seedStudentLastNames = []string{"Adebayo", "Balogun", "Eze", "Okafor"}
 )
 
 type seedConfig struct {
@@ -37,27 +64,29 @@ type seedConfig struct {
 }
 
 type seedPlan struct {
-	now              time.Time
-	config           seedConfig
-	academicStart    time.Time
-	academicEnd      time.Time
-	semesterStart    time.Time
-	semesterEnd      time.Time
-	faculties        []seedFaculty
-	departments      []seedDepartment
-	programmes       []seedProgramme
-	users            []seedUser
-	students         []seedStudent
-	courses          []seedCourse
-	offerings        []seedOffering
-	venues           []seedVenue
-	timetables       []seedTimetable
-	sessions         []seedSession
-	registrations    []seedRegistration
-	webCheckins      []seedWebCheckin
-	fingerprintScans []seedFingerprint
-	overrides        []seedOverride
-	heartbeats       []seedHeartbeat
+	now                time.Time
+	config             seedConfig
+	academicStart      time.Time
+	academicEnd        time.Time
+	priorSemesterStart time.Time
+	priorSemesterEnd   time.Time
+	semesterStart      time.Time
+	semesterEnd        time.Time
+	faculties          []seedFaculty
+	departments        []seedDepartment
+	programmes         []seedProgramme
+	users              []seedUser
+	students           []seedStudent
+	courses            []seedCourse
+	offerings          []seedOffering
+	venues             []seedVenue
+	timetables         []seedTimetable
+	sessions           []seedSession
+	registrations      []seedRegistration
+	webCheckins        []seedWebCheckin
+	fingerprintScans   []seedFingerprint
+	overrides          []seedOverride
+	heartbeats         []seedHeartbeat
 }
 
 type seedFaculty struct {
@@ -333,12 +362,14 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 	localNow := now.In(loc)
 	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, loc)
 	plan := seedPlan{
-		now:           now,
-		config:        config,
-		academicStart: today.AddDate(0, 0, -90),
-		academicEnd:   today.AddDate(0, 0, 275),
-		semesterStart: today.AddDate(0, 0, -30),
-		semesterEnd:   today.AddDate(0, 0, 150),
+		now:                now,
+		config:             config,
+		academicStart:      today.AddDate(0, 0, -170),
+		academicEnd:        today.AddDate(0, 0, 275),
+		priorSemesterStart: today.AddDate(0, 0, -150),
+		priorSemesterEnd:   today.AddDate(0, 0, -40),
+		semesterStart:      today.AddDate(0, 0, -30),
+		semesterEnd:        today.AddDate(0, 0, 150),
 		faculties: []seedFaculty{
 			{id: seedID(2), name: "Faculty of Engineering"},
 			{id: seedID(3), name: "Faculty of Science"},
@@ -371,33 +402,54 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 	addUser("Engineering faculty administrator", "engineering-admin@attendance.test", "faculty_admin", "faculty", seedID(2), "", "")
 	addUser("Science faculty administrator", "science-admin@attendance.test", "faculty_admin", "faculty", seedID(3), "", "")
 	lecturerIDs := make([]string, len(plan.departments))
+	lecturerName := 0
+	nextLecturerName := func() string {
+		name := seedLecturerNames[lecturerName%len(seedLecturerNames)]
+		lecturerName++
+		return name
+	}
+	departmentLecturers := make([]int, len(plan.departments))
+	addLecturer := func(departmentIndex int) string {
+		department := plan.departments[departmentIndex]
+		departmentLecturers[departmentIndex]++
+		ordinal := departmentLecturers[departmentIndex]
+		email := strings.ToLower(department.code) + "-lecturer@attendance.test"
+		if ordinal > 1 {
+			email = strings.ToLower(fmt.Sprintf("%s-lecturer-%02d@attendance.test", department.code, ordinal))
+		}
+		return addUser(nextLecturerName(), email, "lecturer", "department", "", department.id,
+			fmt.Sprintf("STAFF-%s-%02d", department.code, ordinal))
+	}
 	for index, department := range plan.departments {
 		addUser(department.name+" administrator",
 			strings.ToLower(department.code)+"-admin@attendance.test",
 			"department_admin", "department", "", department.id, "")
-		lecturerIDs[index] = addUser(department.name+" lecturer",
-			strings.ToLower(department.code)+"-lecturer@attendance.test",
-			"lecturer", "department", "", department.id,
-			fmt.Sprintf("STAFF-%s-01", department.code))
+		lecturerIDs[index] = addLecturer(index)
+	}
+	// Additional unassigned lecturers spread across departments so the lecturer
+	// picker (GET /users?role=lecturer) has more than one option per department.
+	for i := 0; i < 10; i++ {
+		addLecturer(i % len(plan.departments))
 	}
 	studentNumber := 100
 	for departmentIndex, department := range plan.departments {
 		programmeID := plan.programmes[departmentIndex].id
-		for _, level := range []int{100, 200, 300, 400} {
+		for levelIndex, level := range []int{100, 200, 300, 400} {
 			for ordinal := 0; ordinal < 3; ordinal++ {
 				studentID := seedID(studentNumber)
 				studentNumber++
 				matric := fmt.Sprintf("%s-%d-%02d", department.code, level, ordinal+1)
 				email := strings.ToLower(fmt.Sprintf("%s-%d-%02d@student.attendance.test", department.code, level, ordinal+1))
+				displayName := seedStudentDisplayName(departmentIndex, levelIndex, ordinal)
 				userID := ""
 				if ordinal == 0 {
 					userID = addUser(
-						fmt.Sprintf("%s %d student %d", department.code, level, ordinal+1),
+						displayName,
 						email, "student", "department", "", department.id, "")
 				}
 				plan.students = append(plan.students, seedStudent{
 					id: studentID, matric: matric, email: email,
-					name:         fmt.Sprintf("%s Student %d (%d)", department.code, ordinal+1, level),
+					name:         displayName,
 					departmentID: department.id, programmeID: programmeID, level: level, userID: userID,
 				})
 			}
@@ -525,6 +577,12 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 		return seedPlan{}, err
 	}
 	return plan, nil
+}
+
+func seedStudentDisplayName(departmentIndex, levelIndex, ordinal int) string {
+	index := departmentIndex*12 + levelIndex*3 + ordinal
+	return seedStudentFirstNames[index%len(seedStudentFirstNames)] + " " +
+		seedStudentLastNames[index/len(seedStudentFirstNames)]
 }
 
 func loadSeedConfig(getenv func(string) string) (seedConfig, error) {
@@ -817,9 +875,18 @@ ends_on=EXCLUDED.ends_on,current=true`,
 		plan.academicStart.Format("2006-01-02"), plan.academicEnd.Format("2006-01-02")); err != nil {
 		return nil, false, err
 	}
-	if err := execSeed(ctx, tx, "current semester", `
+	if err := execSeed(ctx, tx, "prior semester", `
 INSERT INTO semesters(id,institution_id,academic_session_id,name,starts_on,ends_on)
 VALUES($1,$2,$3,'Semester 1',$4::date,$5::date)
+ON CONFLICT(id) DO UPDATE SET academic_session_id=EXCLUDED.academic_session_id,
+name=EXCLUDED.name,starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on`,
+		seedID(14), institutionID, seedID(12),
+		plan.priorSemesterStart.Format("2006-01-02"), plan.priorSemesterEnd.Format("2006-01-02")); err != nil {
+		return nil, false, err
+	}
+	if err := execSeed(ctx, tx, "current semester", `
+INSERT INTO semesters(id,institution_id,academic_session_id,name,starts_on,ends_on)
+VALUES($1,$2,$3,'Semester 2',$4::date,$5::date)
 ON CONFLICT(id) DO UPDATE SET academic_session_id=EXCLUDED.academic_session_id,
 name=EXCLUDED.name,starts_on=EXCLUDED.starts_on,ends_on=EXCLUDED.ends_on`,
 		seedID(13), institutionID, seedID(12),
@@ -955,6 +1022,10 @@ status=EXCLUDED.status,approved_at=EXCLUDED.approved_at`,
 			institutionID, registration.offeringID, registration.studentID, registration.status, approvedAt); err != nil {
 			return nil, false, err
 		}
+	}
+	if err := execSeed(ctx, tx, "close legacy open demo session", closeLegacyOpenSessionQuery,
+		institutionID, legacyOpenSessionID, now); err != nil {
+		return nil, false, err
 	}
 	for _, session := range plan.sessions {
 		if err := execSeed(ctx, tx, "lecture session "+session.id, `

@@ -686,6 +686,8 @@ func writeFailure(w http.ResponseWriter, r *http.Request, err error, message str
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Resource fields are invalid", nil)
 	case errors.Is(err, catalogue.ErrForbidden):
 		httpx.WriteError(w, http.StatusForbidden, "access_denied", "You cannot manage this resource", nil)
+	case errors.Is(err, catalogue.ErrResourceInUse):
+		httpx.WriteError(w, http.StatusConflict, "resource_in_use", "This resource is still referenced by other records; remove them first", nil)
 	case errors.Is(err, catalogue.ErrTimetableOverlap):
 		httpx.WriteError(w, http.StatusConflict, "timetable_overlap", "Another slot overlaps at this venue", nil)
 	case errors.Is(err, catalogue.ErrSlotNotFound):

@@ -21,10 +21,35 @@ type Device struct {
 	VenueID       string
 }
 
+// DeviceStatus is the optional health telemetry a scanner reports. Any field may
+// be nil when the firmware does not supply it.
+type DeviceStatus struct {
+	FirmwareVersion   *string
+	BatteryPercent    *int
+	PendingQueueDepth *int
+	FreeStorageBytes  *int64
+}
+
 type ScanItem struct {
-	SlotID          string
+	SlotNumber      int
 	Confidence      float64
 	ClientScannedAt *time.Time
+}
+
+// DeviceTemplate is one roster entry a device loads into its sensor: the slot
+// position to use, who it belongs to, and the base64-encoded template blob.
+type DeviceTemplate struct {
+	SlotNumber      int    `json:"slot_number"`
+	StudentRecordID string `json:"student_record_id"`
+	StudentRef      string `json:"student_ref"`
+	Template        string `json:"template"`
+}
+
+// TemplateSync is the set of templates a device should hold for a session.
+type TemplateSync struct {
+	SessionID  string           `json:"session_id"`
+	Slots      []DeviceTemplate `json:"slots"`
+	ServerTime string           `json:"server_time"`
 }
 
 type ScanResult struct {
@@ -35,7 +60,7 @@ type ScanResult struct {
 }
 
 type ScanStore interface {
-	StudentForSlot(context.Context, string, string, string) (string, bool, error)
+	StudentForSlotNumber(context.Context, string, string, int) (string, bool, error)
 	OpenSessionAtVenue(context.Context, string, string) (string, bool, error)
 	SessionAtVenueTime(context.Context, string, string, time.Time) (string, bool, error)
 	InsertFingerprintScan(context.Context, string, string, string, string, float64, *time.Time) (bool, error)
@@ -43,7 +68,7 @@ type ScanStore interface {
 
 type TaskStore interface {
 	LoadTasks(context.Context, string, string) (Tasks, error)
-	CompleteEnrolment(context.Context, string, string, string, string, time.Time) error
+	CompleteEnrolment(context.Context, string, string, string, string, []byte, time.Time) error
 }
 
 type Service struct {
@@ -58,14 +83,14 @@ func NewService(store ScanStore) (*Service, error) {
 }
 
 func (s *Service) Process(ctx context.Context, device Device, item ScanItem) (ScanResult, error) {
-	if item.SlotID == "" {
+	if item.SlotNumber < 1 {
 		return ScanResult{ErrorCode: "invalid_slot"}, ErrInvalidSlot
 	}
 	if math.IsNaN(item.Confidence) || math.IsInf(item.Confidence, 0) ||
 		item.Confidence < 0 || item.Confidence > 1 {
 		return ScanResult{ErrorCode: "invalid_confidence"}, ErrInvalidConfidence
 	}
-	studentID, found, err := s.store.StudentForSlot(ctx, device.InstitutionID, device.ID, item.SlotID)
+	studentID, found, err := s.store.StudentForSlotNumber(ctx, device.InstitutionID, device.ID, item.SlotNumber)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("resolve device slot: %w", err)
 	}

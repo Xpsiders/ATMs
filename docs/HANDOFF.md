@@ -27,10 +27,13 @@ that every phase or database-backed behavior is complete. See
 - Catalogue/offering resource-scope filtering and destination checks, with
   related RBAC tests and documentation.
 - A transactional, repeatable, date-relative `scripts/seed` dataset with two
-  faculties, four departments/programmes, ten courses/offerings spanning all
-  registration modes, four lecturer accounts/staff records, 48 students (16
-  claimed), three venues/scanners, weekly timetables, open and historical
-  sessions, registrations, and varied attendance/check-in/scan/override states.
+  faculties, four departments/programmes, a prior and a current semester under
+  the current academic session, ten courses/offerings (in the current semester)
+  spanning all registration modes, fourteen lecturer accounts/staff records
+  (one assigned per department plus ten spare across departments for the
+  lecturer picker), 48 students (16 claimed), three venues/scanners, weekly
+  timetables, open and historical sessions, registrations, and varied
+  attendance/check-in/scan/override states.
   It also creates pending invitation, signup, and scanner-enrolment records.
   Credentials and unclaimed matric/email pairs are printed; new scanner keys
   and the invitation token appear only on first creation. `--reset` is scoped
@@ -123,13 +126,47 @@ that every phase or database-backed behavior is complete. See
   `gofmt -l .`, `go vet ./...`, `go build ./...`, and `go test ./...` passed
   for this feature slice.
 
+- Device management (provisioning, pairing, telemetry) was added as the new
+  `internal/devices` package plus a device-side `POST /device/status` on
+  `internal/scans`. An administrator provisions a scanner with `POST /devices`
+  (scoped to the venue department, audited) and receives a one-time pairing code
+  to flash into the firmware; the firmware redeems it at `POST /device/pair` for
+  a permanent device key. `POST /devices/{id}/pairing-code` reissues a code,
+  `POST /devices/{id}/rotate-key` clears the key and forces re-pair,
+  `DELETE /devices/{id}` soft-revokes (the key is rejected immediately), and
+  `GET /devices` lists scoped scanners with status and health. `POST
+  /devices/{id}/enrolments` queues a student onto the next device slot and a
+  pending enrolment task (previously only the seed created tasks). The new
+  migration `00006_device_management.sql` makes `devices.key_hash` nullable, adds
+  telemetry columns, and adds the `device_pairing_codes` table. Authorization
+  reuses the `rbac.CanAccess` venue-department pattern and additionally allows a
+  lecturer to manage scanners at venues they teach at (assigned to an offering
+  timetabled at the venue); all mutations write audit rows (pairing is
+  device-initiated, so its audit row carries a null actor). Viewing attendance
+  needs no device role — an assigned lecturer already sees their sessions'
+  reports. Fingerprint templates are stored centrally (`student_fingerprints`,
+  migration `00007`) so a student enrolled on one scanner is recognised on any
+  scanner serving a session they are registered for: `POST
+  /device/enrolments/{id}/complete` accepts the sensor template, and `POST
+  /device/templates/sync` returns a session roster's templates with the integer
+  slot positions to load. Device scans now identify the student by `slot_number`
+  (the sensor's native position, resolved via `device_slots`) instead of a UUID,
+  and the pending-enrolment task carries `slot_number`.
+  Deterministic unit tests cover the scope helper, pairing-code generation,
+  provisioning, rotation, revocation, enrolment enqueue, and status validation.
+  The migration and all PostgreSQL behavior remain unverified in-session (Docker
+  paused). `gofmt`, `go vet`, `go build`, `go test`, and `openapi-typescript`
+  validation passed for this slice.
+
 ## Next priority
 
 Continue using the active order in `docs/PROGRESS.md`. Database verification
-of the catalogue scope queries and seed loader remains blocked while Docker
-Desktop is paused; code work still outstanding includes device-key
-provisioning/rotation/revocation, aggregate reports, disputes, and remaining
-hardening.
+of the catalogue scope queries, the seed loader, and the new device-management
+migration/queries remains blocked while Docker Desktop is paused; code work
+still outstanding includes aggregate reports, disputes, and remaining
+hardening. A natural device follow-up is auto-queuing fingerprint enrolment
+when a student registers for a course, rather than the current explicit
+`POST /devices/{id}/enrolments` action.
 
 ## Do not claim complete
 
