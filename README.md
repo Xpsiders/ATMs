@@ -27,7 +27,11 @@ attendance service.
 1. Copy `.env.example` to `.env`, and set `DATABASE_URL` and
    `ALLOWED_ORIGIN`. Keep real secrets out of source control. The Go process
    does not load `.env` automatically; export the values in your shell or use
-   Compose, which reads `.env` for variable substitution.
+   Compose, which reads `.env` for variable substitution. `DATABASE_URL` is
+   for Go commands running on the host (`localhost`). Compose services always
+   connect to the bundled `postgres` service using `POSTGRES_USER`,
+   `POSTGRES_PASSWORD`, and `POSTGRES_DB`; a host `DATABASE_URL` does not
+   override their in-network database connection.
 2. Start PostgreSQL with `docker compose up -d postgres`.
 3. Run the API with `go run ./cmd/api`.
 4. Check `http://localhost:8080/healthz` and `/readyz`.

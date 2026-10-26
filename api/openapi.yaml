@@ -1214,7 +1214,7 @@ paths:
                 programme_id: {type: string, format: uuid}
                 display_name: {type: string, minLength: 1, maxLength: 200}
       responses:
-        "200": {description: Request reviewed; approval requires department_id, level, programme_id, and display_name, creates the student record, and writes an audit event.}
+        "200": {description: "Request reviewed; approval requires department_id, level, programme_id, and display_name, creates the student record, and writes an audit event."}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Request is outside caller department scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
@@ -2529,7 +2529,7 @@ paths:
         "202": {description: Teaching request created because the lecturer does not own the course's department., content: {application/json: {schema: {type: object, required: [status, teaching_request_id], properties: {status: {type: string, enum: [pending]}, teaching_request_id: {type: string, format: uuid}}}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller is neither an administrator over the course's department nor a lecturer, so cannot create an offering for this course., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: "Caller is neither an administrator over the course's department nor a lecturer, so cannot create an offering for this course.", content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
   /offerings/{id}:
     get:
       operationId: getOffering
@@ -2932,6 +2932,7 @@ paths:
     post:
       operationId: pairDevice
       summary: Redeem a pairing code for a permanent device key
+      security: [] # public: the device has no key yet
       description: >-
         Called once by scanner firmware on first boot with the pairing code that
         was flashed into the image. Returns the permanent device key the firmware
@@ -3194,7 +3195,10 @@ components:
             properties:
               role: {type: string}
               scope_type: {type: string}
-              scope_id: {type: string, format: uuid, nullable: true}
+              scope_id:
+                oneOf:
+                  - {type: string, format: uuid}
+                  - {type: "null"}
     TimetableSlot:
       type: object
       required: [id, offering_id, venue_id, weekday, starts_at, ends_at]
@@ -3823,7 +3827,7 @@ components:
             properties:
               slot_number: {type: integer, minimum: 1, description: Sensor position to load this template into.}
               student_record_id: {type: string, format: uuid}
-              student_ref: {type: string, description: The student's matric number, for display/logging.}
+              student_ref: {type: string, description: "The student's matric number, for display/logging."}
               template: {type: string, description: Base64-encoded fingerprint template to load into the sensor at slot_number.}
   responses:
     InvalidJSON:

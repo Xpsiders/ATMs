@@ -1,23 +1,31 @@
-# Render Blueprint for the Campus Attendance API (backend + database).
-# Deploy by committing this file and creating a Blueprint in the Render dashboard
-# (New + -> Blueprint) pointed at this repo. Edit the placeholders marked EDIT.
+# Render Blueprint for the Campus Attendance API (backend only).
 #
-# The frontend (attendance-web) is deployed separately from its own repo as a
-# Render Static Site; it is intentionally not defined here. After both are up,
-# set the cross-origin values:
-#   - here (API)  ALLOWED_ORIGIN    = the frontend's URL, e.g. https://attendance-web.onrender.com
-#   - frontend    VITE_API_BASE_URL = this API's URL,     e.g. https://attendance-api.onrender.com
+# NOTE: Render Blueprints require a PAID workspace. On the FREE tier, do NOT use
+# this file - instead create the service by hand in the dashboard:
+#   New + -> Web Service -> connect this repo -> Runtime: Docker -> Instance: Free
+#   Settings -> Docker Command (overrides the Dockerfile CMD):
+#     sh -c "goose -dir /app/db/migrations postgres \"$DATABASE_URL\" up && (seed || echo 'seed skipped') && exec api"
+#   Settings -> Health Check Path: /healthz
+#   Environment -> add every variable listed under envVars below (generate
+#     JWT_SECRET and CODE_HMAC_SECRET yourself, e.g. `openssl rand -base64 48`).
+# This file stays valid for when you move to a paid plan and want one-click IaC.
 #
-# Each deploy runs migrations and then the seed. The seed is idempotent (it
-# upserts and preserves existing keys), so it is safe to re-run; it also prints
-# login credentials and newly created scanner keys to the deploy logs the first
-# time. Drop the "&& seed" from preDeployCommand if you later switch to real data.
-
-databases:
-  - name: attendance-db
-    databaseName: attendance
-    user: attendance
-    plan: free # EDIT: free expires after ~90 days; use a paid plan for anything lasting
+# Fill the values marked EDIT in the Render dashboard after the first deploy.
+#
+# Database: this uses an EXTERNAL PostgreSQL via the DATABASE_URL you paste in
+# (recommended: a free Neon or Supabase database - they don't expire, unlike
+# Render's free Postgres). You can also paste a Render-managed database's URL.
+# Whatever the source, the URL must allow TLS; append ?sslmode=require if needed.
+#
+# Free tier notes:
+#   - Pre-deploy commands aren't available on free instances, so migrations and
+#     the seed run at container startup (see dockerCommand) instead. Both are
+#     idempotent, so re-running on every cold start is safe.
+#   - Free web services sleep after ~15 min idle; the first request after that
+#     cold-starts (and re-runs migrate/seed), so expect a slow first hit.
+#
+# Frontend: deployed separately on Vercel. Set ALLOWED_ORIGIN (below) to the
+# Vercel production URL, and set VITE_API_BASE_URL on Vercel to this API's URL.
 
 services:
   - type: web
@@ -26,19 +34,19 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free
     healthCheckPath: /healthz
-    # Apply all migrations, then load the seed dataset, before each deploy goes live.
-    preDeployCommand: goose -dir /app/db/migrations postgres "$DATABASE_URL" up && seed
+    # Free tier has no pre-deploy hook, so migrate + seed, then start the API.
+    # goose and seed are idempotent; exec api makes the server the main process.
+    dockerCommand: >-
+      sh -c "goose -dir /app/db/migrations postgres \"$DATABASE_URL\" up && (seed || echo 'seed skipped') && exec api"
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: attendance-db
-          property: connectionString
+        sync: false # EDIT: external Postgres URL, e.g. postgres://user:pass@host/db?sslmode=require
       - key: APP_ENV
         value: production
       - key: COOKIE_SECURE
         value: "true"
       - key: COOKIE_SAME_SITE
-        value: none # required: API and site are different origins, so the refresh cookie must be SameSite=None
+        value: none # required: API (Render) and frontend (Vercel) are different sites
       - key: DEVICE_OFFLINE_SECONDS
         value: "60"
       - key: JWT_SECRET
@@ -46,18 +54,18 @@ services:
       - key: CODE_HMAC_SECRET
         generateValue: true
       - key: ALLOWED_ORIGIN
-        sync: false # EDIT in dashboard: the frontend's URL (exact, no trailing slash)
+        sync: false # EDIT: your Vercel production URL, e.g. https://attendance-web.vercel.app (exact, no trailing slash)
       - key: MAIL_FROM
         sync: false # EDIT: e.g. "Campus Attendance <noreply@yourdomain>"
       - key: MAIL_API_KEY
         sync: false # EDIT: transactional-email API key (leave blank only if email is not needed yet)
-      # --- seed placement (optional) ---
+      # --- seed placement (so check-ins work from your real location) ---
       - key: TZ
         value: Africa/Lagos
       - key: SEED_VENUE_RADIUS_M
         value: "150"
       - key: SEED_ORIGIN_LAT
-        sync: false # EDIT: latitude of your real venue location, so check-ins work from there
+        sync: false # EDIT: latitude of your real venue location
       - key: SEED_ORIGIN_LNG
         sync: false # EDIT: longitude of your real venue location
-      # PORT is injected by Render and the app binds it automatically; no HTTP_ADDR needed.
+      # PORT is injected by Render and the app binds it automatically.

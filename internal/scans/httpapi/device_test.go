@@ -17,7 +17,6 @@ import (
 const (
 	testDeviceKey = "device-secret"
 	testDeviceID  = "2f4e4ed0-490c-4cba-9343-62b0744d6ba7"
-	testSlotID    = "4c39d74e-7b7c-4cb0-8bd5-c8274905e3ce"
 )
 
 type fakeDeviceStore struct {
