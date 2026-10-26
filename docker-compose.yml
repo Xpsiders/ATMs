@@ -48,6 +48,8 @@ services:
 
   api:
     <<: *app
+    # Compose runs migrate + seed as their own services, so the API just serves.
+    command: ["api"]
     environment:
       APP_ENV: ${APP_ENV:-development}
       HTTP_ADDR: ${HTTP_ADDR:-:8080}

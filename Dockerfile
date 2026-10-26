@@ -16,4 +16,8 @@ WORKDIR /app
 COPY --from=build /out/api /out/seed /out/goose /usr/local/bin/
 COPY db/migrations /app/db/migrations
 EXPOSE 8080
-CMD ["api"]
+# Default: apply migrations, load the (idempotent) seed, then run the API. This
+# makes a plain `docker run` / Render Docker service work with no extra command.
+# goose must succeed (a bad DATABASE_URL fails the boot loudly); seed is allowed
+# to fail without blocking startup. Compose overrides this per service.
+CMD ["sh", "-c", "goose -dir /app/db/migrations postgres \"$DATABASE_URL\" up && (seed || echo 'seed skipped') && exec api"]
