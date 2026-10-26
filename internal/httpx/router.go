@@ -13,16 +13,16 @@ type pinger interface {
 	Ping(context.Context) error
 }
 
-func NewRouter(pool *pgxpool.Pool, allowedOrigin string, registerRoutes ...func(chi.Router)) http.Handler {
-	return NewRouterWithPinger(pool, allowedOrigin, registerRoutes...)
+func NewRouter(pool *pgxpool.Pool, allowedOrigins []string, registerRoutes ...func(chi.Router)) http.Handler {
+	return NewRouterWithPinger(pool, allowedOrigins, registerRoutes...)
 }
 
-func NewRouterWithPinger(database pinger, allowedOrigin string, registerRoutes ...func(chi.Router)) http.Handler {
+func NewRouterWithPinger(database pinger, allowedOrigins []string, registerRoutes ...func(chi.Router)) http.Handler {
 	router := chi.NewRouter()
 	router.Use(RequestID)
 	router.Use(RequestLogger)
 	router.Use(Recoverer)
-	router.Use(CORS(allowedOrigin))
+	router.Use(CORS(allowedOrigins))
 	router.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

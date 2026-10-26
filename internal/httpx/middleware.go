@@ -45,19 +45,23 @@ func RequestIDFromContext(ctx context.Context) string {
 	return id
 }
 
-func CORS(allowedOrigin string) func(http.Handler) http.Handler {
+func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
+	allowed := originMatcher(allowedOrigins)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
-			if origin != "" && origin == allowedOrigin {
-				w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			permitted := origin != "" && allowed(origin)
+			if permitted {
+				// Echo the matched origin (never "*") so credentialed requests are
+				// allowed, and Vary so caches key on Origin.
+				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Device-Key, X-Request-ID, If-None-Match")
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			}
 			if r.Method == http.MethodOptions {
-				if origin != allowedOrigin {
+				if !permitted {
 					WriteError(w, http.StatusForbidden, "cors_origin_denied", "Origin is not allowed", nil)
 					return
 				}
@@ -66,5 +70,39 @@ func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// originMatcher builds a predicate that permits an Origin when it exactly equals
+// an allowed entry, or matches a single-wildcard entry such as
+// "https://*.vercel.app" (any subdomain). Only allowlisted origins are ever
+// reflected back; arbitrary origins are never echoed.
+func originMatcher(allowedOrigins []string) func(string) bool {
+	type wildcard struct{ prefix, suffix string }
+	exact := make(map[string]struct{})
+	var wildcards []wildcard
+	for _, entry := range allowedOrigins {
+		entry = strings.TrimRight(strings.TrimSpace(entry), "/")
+		if entry == "" {
+			continue
+		}
+		if index := strings.IndexByte(entry, '*'); index >= 0 {
+			wildcards = append(wildcards, wildcard{prefix: entry[:index], suffix: entry[index+1:]})
+			continue
+		}
+		exact[entry] = struct{}{}
+	}
+	return func(origin string) bool {
+		origin = strings.TrimRight(origin, "/")
+		if _, ok := exact[origin]; ok {
+			return true
+		}
+		for _, w := range wildcards {
+			if len(origin) > len(w.prefix)+len(w.suffix) &&
+				strings.HasPrefix(origin, w.prefix) && strings.HasSuffix(origin, w.suffix) {
+				return true
+			}
+		}
+		return false
 	}
 }

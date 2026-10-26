@@ -133,7 +133,7 @@ func main() {
 		logger.Error("configure invitation handler", "error", err)
 		os.Exit(1)
 	}
-	if err := invitationService.SetBaseURL(cfg.AllowedOrigin); err != nil {
+	if err := invitationService.SetBaseURL(cfg.AllowedOrigins[0]); err != nil {
 		logger.Error("configure invitation URL", "error", err)
 		os.Exit(1)
 	}
@@ -305,7 +305,7 @@ func main() {
 		logger.Error("configure student import store", "error", err)
 		os.Exit(1)
 	}
-	if err := importStore.SetInvitationBaseURL(cfg.AllowedOrigin); err != nil {
+	if err := importStore.SetInvitationBaseURL(cfg.AllowedOrigins[0]); err != nil {
 		logger.Error("configure staff invitation URL", "error", err)
 		os.Exit(1)
 	}
@@ -319,7 +319,7 @@ func main() {
 		logger.Error("configure student import handler", "error", err)
 		os.Exit(1)
 	}
-	handler := httpx.NewRouter(pool, cfg.AllowedOrigin, func(router chi.Router) {
+	handler := httpx.NewRouter(pool, cfg.AllowedOrigins, func(router chi.Router) {
 		authHandler.RegisterRoutes(router)
 		claimHandler.RegisterRoutes(router)
 		invitationHandler.RegisterPublicRoutes(router)

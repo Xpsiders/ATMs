@@ -54,7 +54,7 @@ services:
       - key: CODE_HMAC_SECRET
         generateValue: true
       - key: ALLOWED_ORIGIN
-        sync: false # EDIT: your Vercel production URL, e.g. https://attendance-web.vercel.app (exact, no trailing slash)
+        sync: false # EDIT: allowed CORS origins, comma-separated. e.g. https://campuscheck.vercel.app,https://*.vercel.app (the *.vercel.app entry allows preview deploys; omit it for tighter security). No trailing slash.
       - key: MAIL_FROM
         sync: false # EDIT: e.g. "Campus Attendance <noreply@yourdomain>"
       - key: MAIL_API_KEY

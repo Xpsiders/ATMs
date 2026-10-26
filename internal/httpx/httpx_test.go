@@ -40,7 +40,7 @@ func TestDecodeJSONRejectsUnknownAndTrailingFields(t *testing.T) {
 }
 
 func TestRequestIDAndCORS(t *testing.T) {
-	handler := RequestID(CORS("https://web.example")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := RequestID(CORS([]string{"https://web.example"})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if RequestIDFromContext(r.Context()) == "" {
 			t.Error("request ID missing from context")
 		}
@@ -58,6 +58,31 @@ func TestRequestIDAndCORS(t *testing.T) {
 	}
 }
 
+func TestCORSAllowlistAndWildcard(t *testing.T) {
+	cors := CORS([]string{"https://campuscheck.vercel.app", "https://*.vercel.app"})
+	handler := cors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+
+	check := func(origin string, wantAllowed bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodOptions, "/me", nil)
+		req.Header.Set("Origin", origin)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		allowed := rec.Header().Get("Access-Control-Allow-Origin") == origin &&
+			rec.Header().Get("Access-Control-Allow-Credentials") == "true"
+		if allowed != wantAllowed {
+			t.Fatalf("origin %q allowed=%v want %v (status %d)", origin, allowed, wantAllowed, rec.Code)
+		}
+		if !wantAllowed && rec.Code != http.StatusForbidden {
+			t.Fatalf("disallowed preflight for %q = %d, want 403", origin, rec.Code)
+		}
+	}
+	check("https://campuscheck.vercel.app", true)            // exact
+	check("https://campuscheck-git-main-x.vercel.app", true) // preview via wildcard
+	check("https://evil.example.com", false)                 // not allowlisted
+	check("https://vercel.app", false)                       // wildcard requires a subdomain label
+}
+
 func TestDecodeJSONRejectsOversizedBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(strings.Repeat(" ", MaxRequestBody+1)))
 	recorder := httptest.NewRecorder()
@@ -68,7 +93,7 @@ func TestDecodeJSONRejectsOversizedBody(t *testing.T) {
 }
 
 func TestReadyHandlerReportsDatabaseFailure(t *testing.T) {
-	handler := NewRouterWithPinger(pingFunc(func(_ context.Context) error { return errors.New("offline") }), "https://web.example")
+	handler := NewRouterWithPinger(pingFunc(func(_ context.Context) error { return errors.New("offline") }), []string{"https://web.example"})
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if recorder.Code != http.StatusServiceUnavailable {

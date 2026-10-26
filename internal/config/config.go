@@ -13,7 +13,7 @@ import (
 type Config struct {
 	HTTPAddr             string
 	DatabaseURL          string
-	AllowedOrigin        string
+	AllowedOrigins       []string
 	LogLevel             slog.Level
 	JWTSecret            []byte
 	CodeHMACSecret       []byte
@@ -29,7 +29,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		HTTPAddr:       httpAddr(),
 		DatabaseURL:    strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		AllowedOrigin:  strings.TrimSpace(os.Getenv("ALLOWED_ORIGIN")),
+		AllowedOrigins: parseOrigins(os.Getenv("ALLOWED_ORIGIN")),
 		JWTSecret:      []byte(strings.TrimSpace(os.Getenv("JWT_SECRET"))),
 		CodeHMACSecret: []byte(strings.TrimSpace(os.Getenv("CODE_HMAC_SECRET"))),
 		MailAPIKey:     strings.TrimSpace(os.Getenv("MAIL_API_KEY")),
@@ -39,7 +39,7 @@ func Load() (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
 	}
-	if cfg.AllowedOrigin == "" {
+	if len(cfg.AllowedOrigins) == 0 {
 		return Config{}, errors.New("ALLOWED_ORIGIN is required")
 	}
 	if len(cfg.JWTSecret) < 32 {
@@ -94,6 +94,27 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid LOG_LEVEL %q", os.Getenv("LOG_LEVEL"))
 	}
 	return cfg, nil
+}
+
+// parseOrigins splits a comma-separated ALLOWED_ORIGIN into a trimmed, de-duped
+// list of allowed CORS origins. An entry may be an exact origin
+// (https://app.example) or a single-wildcard pattern (https://*.vercel.app) that
+// matches any subdomain, so Vercel preview URLs can be allowed without a redeploy.
+func parseOrigins(raw string) []string {
+	seen := map[string]struct{}{}
+	origins := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimRight(strings.TrimSpace(part), "/")
+		if origin == "" {
+			continue
+		}
+		if _, ok := seen[origin]; ok {
+			continue
+		}
+		seen[origin] = struct{}{}
+		origins = append(origins, origin)
+	}
+	return origins
 }
 
 func envOr(key, fallback string) string {
