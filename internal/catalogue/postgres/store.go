@@ -813,6 +813,31 @@ func isForeignKeyViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
+func (s *Store) PublicDepartments(ctx context.Context, institutionIDText string) ([]map[string]any, error) {
+	tenant, err := db.ParseUUID(institutionIDText)
+	if err != nil {
+		return nil, catalogue.ErrInvalidRequest
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id::text, name, code FROM departments
+		WHERE institution_id=$1 ORDER BY name, id`, tenant)
+	if err != nil {
+		return nil, fmt.Errorf("list public departments: %w", err)
+	}
+	defer rows.Close()
+	departments := []map[string]any{}
+	for rows.Next() {
+		var id, name, code string
+		if err := rows.Scan(&id, &name, &code); err != nil {
+			return nil, fmt.Errorf("scan public department: %w", err)
+		}
+		departments = append(departments, map[string]any{"id": id, "name": name, "code": code})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read public departments: %w", err)
+	}
+	return departments, nil
+}
+
 func (s *Store) CanManage(ctx context.Context, institutionID, userID string, resource catalogue.Resource, id string, fields map[string]any) (bool, error) {
 	tenant, err := db.ParseUUID(institutionID)
 	if err != nil {

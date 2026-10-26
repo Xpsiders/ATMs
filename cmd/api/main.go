@@ -322,6 +322,7 @@ func main() {
 	handler := httpx.NewRouter(pool, cfg.AllowedOrigins, func(router chi.Router) {
 		authHandler.RegisterRoutes(router)
 		claimHandler.RegisterRoutes(router)
+		catalogueHandler.RegisterPublicRoutes(router)
 		invitationHandler.RegisterPublicRoutes(router)
 		passwordResetHandler.RegisterRoutes(router)
 		sessionHandler.RegisterRoutes(router.With(auth.UserAuth(tokens)))

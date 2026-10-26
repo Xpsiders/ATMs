@@ -6,6 +6,41 @@ info:
 servers:
   - url: http://localhost:8080
 paths:
+  /public/departments:
+    get:
+      operationId: listPublicDepartments
+      summary: List an institution's departments (unauthenticated)
+      description: Read-only department id/name/code for the pre-login claim and signup screens, so they can show a department name picker instead of asking for a UUID. Scoped to the given institution.
+      security: []
+      parameters:
+        - name: institution_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Departments in the institution.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, code]
+                      properties:
+                        id: {type: string, format: uuid}
+                        name: {type: string}
+                        code: {type: string}
+        "400":
+          description: Missing or invalid institution_id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
   /healthz:
     get:
       operationId: getHealth

@@ -61,6 +61,9 @@ func (f *fakeStore) OfferingLecturers(context.Context, string, string) ([]map[st
 func (f *fakeStore) OfferingAutoTargets(context.Context, string, string) ([]catalogue.AutoTarget, error) {
 	return []catalogue.AutoTarget{}, nil
 }
+func (f *fakeStore) PublicDepartments(context.Context, string) ([]map[string]any, error) {
+	return []map[string]any{}, nil
+}
 func (f *fakeStore) ListVenues(_ context.Context, institutionID, userID string, limit, offset int) ([]map[string]any, int64, error) {
 	f.venueInstitution = institutionID
 	f.venueUser = userID

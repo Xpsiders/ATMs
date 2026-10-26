@@ -40,6 +40,7 @@ type Store interface {
 	SetOfferingAutoTargets(context.Context, string, string, []AutoTarget) error
 	OfferingLecturers(context.Context, string, string) ([]map[string]any, error)
 	OfferingAutoTargets(context.Context, string, string) ([]AutoTarget, error)
+	PublicDepartments(context.Context, string) ([]map[string]any, error)
 }
 
 type VenueListingStore interface {
@@ -175,6 +176,18 @@ func (s *Service) DeactivateVenue(ctx context.Context, institutionID, userID, ve
 		return errors.New("venue management is not supported by this store")
 	}
 	return store.DeactivateVenue(ctx, institutionID, userID, venueID)
+}
+
+// PublicDepartments lists an institution's departments (id, name, code) without
+// authentication, so the pre-login claim/signup screen can show a department
+// name picker instead of asking for a raw UUID. Department names are not
+// sensitive; results are scoped to the given institution.
+func (s *Service) PublicDepartments(ctx context.Context, institutionID string) ([]map[string]any, error) {
+	institutionID = strings.TrimSpace(institutionID)
+	if institutionID == "" {
+		return nil, ErrInvalidRequest
+	}
+	return s.store.PublicDepartments(ctx, institutionID)
 }
 
 func (s *Service) Create(ctx context.Context, institutionID, userID string, resource Resource, fields map[string]any) (map[string]any, error) {

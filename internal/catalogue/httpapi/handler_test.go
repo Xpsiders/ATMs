@@ -29,6 +29,7 @@ type endpointStore struct {
 	canReadOffering     bool
 	lecturerInstitution string
 	lecturerOffering    string
+	departments         []map[string]any
 }
 
 func (s *endpointStore) List(_ context.Context, institutionID, userID, _ string, resource catalogue.Resource, filters map[string]string) ([]map[string]any, error) {
@@ -62,6 +63,9 @@ func (s *endpointStore) OfferingLecturers(_ context.Context, institutionID, offe
 }
 func (*endpointStore) OfferingAutoTargets(context.Context, string, string) ([]catalogue.AutoTarget, error) {
 	return nil, errors.New("not implemented")
+}
+func (s *endpointStore) PublicDepartments(context.Context, string) ([]map[string]any, error) {
+	return s.departments, nil
 }
 func (s *endpointStore) ListVenues(_ context.Context, institutionID, userID string, _, _ int) ([]map[string]any, int64, error) {
 	s.venueInstitution, s.venueUser = institutionID, userID

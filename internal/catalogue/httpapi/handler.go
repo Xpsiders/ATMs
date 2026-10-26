@@ -167,6 +167,29 @@ func (h *Handler) deactivateVenue(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// RegisterPublicRoutes mounts unauthenticated, read-only routes that the
+// pre-login claim/signup screens need (e.g. a department name picker).
+func (h *Handler) RegisterPublicRoutes(router chi.Router) {
+	router.Get("/public/departments", h.publicDepartments)
+}
+
+func (h *Handler) publicDepartments(w http.ResponseWriter, r *http.Request) {
+	institutionID := strings.TrimSpace(r.URL.Query().Get("institution_id"))
+	if _, err := db.ParseUUID(institutionID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "institution_id is required and must be a UUID", nil)
+		return
+	}
+	items, err := h.service.PublicDepartments(r.Context(), institutionID)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to list departments")
+		return
+	}
+	if items == nil {
+		items = []map[string]any{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (h *Handler) registerResource(router chi.Router, path string, resource catalogue.Resource) {
 	router.Get("/"+path, h.list(resource))
 	if resource == catalogue.Offerings {
