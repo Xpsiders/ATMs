@@ -182,7 +182,7 @@ func main() {
 		logger.Error("configure check-in store", "error", err)
 		os.Exit(1)
 	}
-	checkinService, err := checkins.NewService(checkinStore, systemClock, cfg.CodeHMACSecret, time.Minute)
+	checkinService, err := checkins.NewService(checkinStore, systemClock, cfg.CodeHMACSecret, cfg.CheckinCodeWindow)
 	if err != nil {
 		logger.Error("configure check-in service", "error", err)
 		os.Exit(1)
@@ -197,8 +197,10 @@ func main() {
 		logger.Error("configure session store", "error", err)
 		os.Exit(1)
 	}
+	// The check-in verifier and the code issuer must agree on the window or
+	// codes would verify inconsistently across the two services.
 	sessionService, err := sessions.NewService(sessionStore, systemClock, cfg.CodeHMACSecret,
-		time.Minute, 5*time.Minute)
+		cfg.CheckinCodeWindow, 5*time.Minute)
 	if err != nil {
 		logger.Error("configure session service", "error", err)
 		os.Exit(1)

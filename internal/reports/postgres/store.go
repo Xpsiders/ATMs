@@ -161,6 +161,7 @@ func (s *Store) ReportRows(ctx context.Context, institutionIDText, sessionIDText
 			DisplayName: row.DisplayName, DepartmentID: row.DepartmentID.String(), Level: int(row.Level),
 			OnRoster: row.OnRoster, HasWebCheckin: row.HasWebCheckin, HasFingerprint: row.HasFingerprint,
 			ScannerAvailable: row.ScannerAvailable, WebCheckinAt: db.TimestampPointer(row.WebCheckinAt),
+			LocationUnverified: row.LocationUnverified,
 		}
 		if row.OverrideStatus.Valid {
 			item.OverrideStatus = row.OverrideStatus.String

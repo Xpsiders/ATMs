@@ -1340,7 +1340,7 @@ func printVenueConfiguration(plan seedPlan) {
 			venue.name, venue.lat, venue.lng, venue.radius)
 	}
 	if !plan.config.originConfigured {
-		fmt.Println("WARNING: No SEED_ORIGIN_LAT/SEED_ORIGIN_LNG configured. Check-ins from your real location will be rejected with outside_radius until both are set.")
+		fmt.Println("WARNING: No SEED_ORIGIN_LAT/SEED_ORIGIN_LNG configured. Check-ins from your real location will be recorded as location_unverified until both are set.")
 	}
 	fmt.Println("Set SEED_ORIGIN_LAT and SEED_ORIGIN_LNG (and optionally SEED_VENUE_RADIUS_M) in .env, then run `go run ./scripts/seed --update-venues` or `docker compose run --rm seed seed --update-venues` to update venues and open-session snapshots.")
 }

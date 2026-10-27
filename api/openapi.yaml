@@ -310,7 +310,7 @@ paths:
                         session_id: {type: string, format: uuid}
                         date: {type: string, format: date}
                         status: {type: string, enum: [present, late, absent, excused]}
-                        classification: {type: string, enum: [verified, suspected_proxy, present_no_web_log, web_only_unverified, absent, excused]}
+                        classification: {type: string, enum: [verified, present_no_web_log, web_only_unverified, absent, excused]}
                         override_reason: {type: [string, "null"]}
         "400":
           description: offering_id is missing or is not a UUID.
@@ -474,13 +474,13 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, name, latitude, longitude, radius_meters, active]
+                      required: [id, name, active]
                       properties:
                         id: {type: string, format: uuid}
                         name: {type: string}
-                        latitude: {type: number}
-                        longitude: {type: number}
-                        radius_meters: {type: integer}
+                        latitude: {type: [number, "null"]}
+                        longitude: {type: [number, "null"]}
+                        radius_meters: {type: [integer, "null"]}
                         active: {type: boolean}
                         department_id: {type: string, format: uuid}
                   limit: {type: integer}
@@ -505,7 +505,11 @@ paths:
     post:
       operationId: createVenue
       summary: Create an institution venue
-      description: Scoped institution, faculty, and department administrators can create venues within their authority.
+      description: >-
+        Scoped institution, faculty, and department administrators can create
+        venues within their authority. Only a name is required: a venue is a
+        named room, and coordinates are optional metadata that never gate a
+        check-in. Set them later, if at all, with POST /venues/{id}/location.
       security:
         - BearerAuth: []
       requestBody:
@@ -514,12 +518,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, latitude, longitude, radius_meters]
+              required: [name]
               properties:
                 name: {type: string, minLength: 1, maxLength: 200}
                 latitude: {type: number, minimum: -90, maximum: 90}
                 longitude: {type: number, minimum: -180, maximum: 180}
-                radius_meters: {type: integer, minimum: 1}
+                radius_meters:
+                  type: integer
+                  minimum: 1
+                  maximum: 2000
+                  default: 75
+                  description: Optional, and only meaningful alongside coordinates. Defaults to 75 metres, which covers a lecture theatre plus ordinary consumer-GPS drift. Use POST /venues/{id}/location to set the coordinates from a position captured inside the room instead of typing them.
                 department_id: {type: string, format: uuid}
       responses:
         "201": {description: Venue created., content: {application/json: {schema: {type: object}}}}
@@ -548,7 +557,7 @@ paths:
                 name: {type: string, minLength: 1, maxLength: 200}
                 latitude: {type: number, minimum: -90, maximum: 90}
                 longitude: {type: number, minimum: -180, maximum: 180}
-                radius_meters: {type: integer, minimum: 1}
+                radius_meters: {type: integer, minimum: 1, maximum: 2000}
                 active: {type: boolean}
                 department_id: {type: string, format: uuid}
       responses:
@@ -565,6 +574,78 @@ paths:
         - BearerAuth: []
       responses:
         "204": {description: Venue deactivated.}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage this venue., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Venue not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
+  /venues/{id}/location:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: captureVenueLocation
+      summary: Set a venue's coordinates from a position captured inside it
+      description: >-
+        Lets an administrator with authority over the venue's department stand in
+        the room and store the position their own device reports, instead of
+        looking latitude and longitude up on a map and retyping them on every
+        change. The browser Geolocation API supplies latitude, longitude, and
+        accuracy_meters. A fix vaguer than 100 metres is refused
+        (`location_too_inaccurate`) so a bad reading cannot become the venue's
+        permanent centre. When radius_meters is omitted the venue keeps its
+        current radius, or takes a default derived from the captured accuracy if
+        it has none. The capture is written to the audit log as
+        `venue.location_captured`.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [latitude, longitude, accuracy_meters]
+              properties:
+                latitude: {type: number, minimum: -90, maximum: 90}
+                longitude: {type: number, minimum: -180, maximum: 180}
+                accuracy_meters:
+                  type: number
+                  minimum: 0
+                  description: The device's own reported accuracy for this fix, in metres.
+                radius_meters:
+                  type: integer
+                  minimum: 1
+                  maximum: 2000
+                  description: Optional override for the venue's check-in radius.
+            example:
+              latitude: 6.5244
+              longitude: 3.3792
+              accuracy_meters: 12.5
+      responses:
+        "200":
+          description: Venue coordinates stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name, latitude, longitude, radius_meters, active]
+                properties:
+                  id: {type: string, format: uuid}
+                  name: {type: string}
+                  latitude: {type: number}
+                  longitude: {type: number}
+                  radius_meters: {type: integer}
+                  accuracy_meters: {type: number}
+                  active: {type: boolean}
+                  department_id: {type: string, format: uuid}
+        "400":
+          description: Fields are invalid, or the captured fix is too imprecise to use (`location_too_inaccurate`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot manage this venue., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Venue not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
@@ -1303,7 +1384,12 @@ paths:
               device_hash: optional-client-device-fingerprint
       responses:
         "201":
-          description: Check-in recorded; accuracy over 100 metres is advisory only.
+          description: >-
+            Check-in recorded. Location never refuses a check-in: a missing,
+            vague, or distant position is recorded and, where there was a
+            position to compare, flagged with `location_unverified` for the
+            lecturer. Presence is proved by the rotating code and the device
+            binding instead.
           content:
             application/json:
               schema:
@@ -1314,8 +1400,11 @@ paths:
                 on_roster: true
                 accuracy_poor: false
                 distance_meters: 18.6
+                location_unverified: false
         "400":
-          description: Invalid JSON/location, wrong or expired code, not on roster, or outside radius.
+          description: >-
+            Invalid JSON, a missing or malformed `device_hash`, a wrong or
+            expired code, or a student not on the roster.
           content:
             application/json:
               schema:
@@ -1326,12 +1415,6 @@ paths:
                     error:
                       code: wrong_or_expired_code
                       message: Session code is wrong or expired
-                      details: {}
-                outsideRadius:
-                  value:
-                    error:
-                      code: outside_radius
-                      message: Student is outside the allowed check-in radius
                       details: {}
                 notOnRoster:
                   value:
@@ -1352,21 +1435,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "409":
-          description: Duplicate check-in.
+          description: >-
+            Duplicate check-in, or a device already used by a different student
+            in this session.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
-              example:
-                error:
-                  code: already_checked_in
-                  message: Student has already checked in
-                  details: {}
+              examples:
+                alreadyCheckedIn:
+                  value:
+                    error:
+                      code: already_checked_in
+                      message: Student has already checked in
+                      details: {}
+                deviceAlreadyUsed:
+                  value:
+                    error:
+                      code: device_already_used
+                      message: This device has already checked in another student for this session
+                      details: {}
   /sessions:
     post:
       operationId: startSession
       summary: Start a lecture session at a venue
-      description: The venue location and radius are copied by default; explicitly supplied values adjust the session snapshot. Only assigned offering lecturers and coordinators may start sessions.
+      description: >-
+        The venue location and radius are copied by default; explicitly
+        supplied values adjust the session snapshot. A venue with no stored
+        coordinates starts a session with none, which is valid — location is
+        advisory and never gates a check-in. Only assigned offering lecturers
+        and coordinators may start sessions.
       security:
         - BearerAuth: []
       requestBody:
@@ -1380,6 +1478,9 @@ paths:
               venue_id: 48c5efb3-9651-478d-9d70-bb5be469f62f
               rotating_code: true
               late_after_min: 10
+              latitude: 6.5244
+              longitude: 3.3792
+              accuracy_meters: 12.5
       responses:
         "201":
           description: Session started and current attendance code returned.
@@ -1551,7 +1652,7 @@ paths:
                         matric_no: {type: string}
                         display_name: {type: string}
                         status: {type: string, enum: [present, late, absent, excused]}
-                        classification: {type: string, enum: [verified, suspected_proxy, present_no_web_log, web_only_unverified, absent, excused]}
+                        classification: {type: string, enum: [verified, present_no_web_log, web_only_unverified, absent, excused]}
                         on_roster: {type: boolean}
                         has_web_checkin: {type: boolean}
                         has_scan: {type: boolean}
@@ -1704,6 +1805,87 @@ paths:
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller cannot review registrations for this offering., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+  /sessions/{id}/location:
+    post:
+      operationId: updateSessionLocation
+      summary: Re-check the lecturer's position during an open session
+      description: >-
+        Applies a position captured on the lecturer's device while the class is
+        running. The lecturer is the only person who is ever in the room, so
+        their device is the source of truth for where that room is: an accepted
+        fix recentres the session and recalibrates the venue, so the next class
+        there starts from a good anchor. The geofence deliberately does not
+        follow the lecturer out of the room - a fix beyond the session's own
+        radius is reported as drift and changes nothing, because moving the
+        centre on it would push the students still in the room outside it. A
+        venue that has never been calibrated has no centre to contradict, so
+        the first trusted fix establishes one. Post the current fix about every
+        five minutes while the session is open, and whenever the app returns to
+        the foreground.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [latitude, longitude, accuracy_meters]
+              additionalProperties: false
+              properties:
+                latitude:
+                  type: number
+                  minimum: -90
+                  maximum: 90
+                longitude:
+                  type: number
+                  minimum: -180
+                  maximum: 180
+                accuracy_meters:
+                  type: number
+                  minimum: 0
+                  description: >-
+                    Required here, unlike on session start. This fix can move a
+                    geofence students are already checking in against, and
+                    without the device's own reported error there is no way to
+                    tell a precise correction from a wild reading.
+            example:
+              latitude: 6.5244
+              longitude: 3.3792
+              accuracy_meters: 12.5
+      responses:
+        "200":
+          description: The fix was classified; the response carries the geofence in force afterwards.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionLocationResult"
+        "400":
+          $ref: "#/components/responses/InvalidJSON"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: User is not an assigned lecturer or coordinator for this session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Session does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: Session is already closed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /sessions/{id}/scanner-status:
     post:
       operationId: markSessionScannerUnavailable
@@ -3422,11 +3604,21 @@ components:
           type: boolean
         classification:
           type: string
-          enum: [verified, suspected_proxy, present_no_web_log, web_only_unverified, absent, excused]
+          enum: [verified, present_no_web_log, web_only_unverified, absent, excused]
         status:
           type: string
         reason:
           type: string
+          description: >-
+            Why a web_only_unverified row could not be verified:
+            `scanner_unavailable` or `scanner_offline` when no scanner covered
+            the check-in, `location_unverified` when the student's phone
+            reported a fix further from the venue than its own accuracy can
+            explain, or `no_fingerprint` when a working scanner was available
+            and the student checked in on the web without scanning. None of
+            these is an accusation: the check-in still passed a live rotating
+            code and the one-student-per-device binding. Confirm or clear them
+            with an attendance override.
     RosterPage:
       type: object
       required: [session_id, items, limit, offset, has_more]
@@ -3563,7 +3755,7 @@ components:
           description: Present for student roles; identifies the locked academic level.
     CheckinRequest:
       type: object
-      required: [session_id, code, lat, lng, accuracy]
+      required: [session_id, code, device_hash]
       additionalProperties: false
       properties:
         session_id:
@@ -3576,18 +3768,33 @@ components:
           type: number
           minimum: -90
           maximum: 90
+          description: >-
+            Optional. Send it when the browser offers a position, omit it when
+            the student denies permission or no fix is available. It is never a
+            reason to refuse the check-in.
         lng:
           type: number
           minimum: -180
           maximum: 180
+          description: Optional; send it together with lat.
         accuracy:
           type: number
           minimum: 0
+          description: >-
+            The device's own reported accuracy in metres, when lat/lng are
+            sent. It widens the tolerance rather than narrowing it.
         device_hash:
           type: string
+          minLength: 8
+          maxLength: 256
+          description: >-
+            Required. A stable per-device fingerprint produced by the client.
+            One device may record at most one student per session, so a handset
+            already used by a different student in this session is refused with
+            `device_already_used`. The server stores only its SHA-256 hash.
     CheckinResponse:
       type: object
-      required: [session_id, status, on_roster, accuracy_poor, distance_meters]
+      required: [session_id, status, on_roster, accuracy_poor, location_unverified]
       properties:
         session_id:
           type: string
@@ -3600,7 +3807,20 @@ components:
         accuracy_poor:
           type: boolean
         distance_meters:
-          type: number
+          type: [number, "null"]
+          description: >-
+            Null when the venue has no stored coordinates or the student sent
+            no position; there is then nothing to measure against.
+        location_unverified:
+          type: boolean
+          description: >-
+            True when a position was compared against the venue and landed
+            beyond the radius plus the phone's own reported accuracy. The
+            attendance is still recorded; the session report shows it as
+            `web_only_unverified` with reason `location_unverified` until a
+            fingerprint scan or a lecturer override confirms it. False when
+            there was no position to compare — an absent signal is not evidence
+            against the student.
     StartSessionRequest:
       type: object
       required: [offering_id, venue_id]
@@ -3632,9 +3852,20 @@ components:
         radius_meters:
           type: integer
           minimum: 1
+        accuracy_meters:
+          type: number
+          minimum: 0
+          description: >-
+            The lecturer device's own reported error, in metres, for the
+            latitude and longitude above. Send navigator.geolocation's
+            coords.accuracy unmodified: a fix of 100 m or better both centres
+            the session and recalibrates the venue, a vaguer one is discarded
+            in favour of the venue's stored centre, and coordinates sent
+            without this field are honoured for this session only and never
+            written back to the venue.
     Session:
       type: object
-      required: [id, offering_id, venue_id, started_at, latitude, longitude, radius_meters, rotating_code, late_after_min]
+      required: [id, offering_id, venue_id, started_at, rotating_code, late_after_min]
       properties:
         id:
           type: string
@@ -3652,11 +3883,11 @@ components:
           type: [string, "null"]
           format: date-time
         latitude:
-          type: number
+          type: [number, "null"]
         longitude:
-          type: number
+          type: [number, "null"]
         radius_meters:
-          type: number
+          type: [number, "null"]
         rotating_code:
           type: boolean
         late_after_min:
@@ -3673,6 +3904,43 @@ components:
           pattern: "^[0-9]{6}$"
         seconds_remaining:
           type: integer
+        location_source:
+          type: string
+          enum: [device, venue, none]
+          description: >-
+            Where the session's geofence centre came from. "device" means the
+            lecturer's fix was used and the venue was recalibrated from it;
+            "venue" means the fix was absent or too vague and the venue's
+            stored centre was used; "none" means neither supplied one, so the
+            session has no geofence and check-ins at it carry no distance.
+            Only present on the session-start response.
+    SessionLocationResult:
+      type: object
+      required: [session_id, outcome, latitude, longitude, radius_meters, moved_meters]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        outcome:
+          type: string
+          enum: [refined, established, unchanged, rejected_accuracy, rejected_distance]
+          description: >-
+            What the fix was allowed to do. "refined" moved the centre and
+            recalibrated the venue; "established" set the first centre for a
+            venue that had none; "unchanged" means the fix agreed with the
+            current centre; "rejected_accuracy" means it was vaguer than 100 m
+            and was ignored; "rejected_distance" means it fell outside the
+            session's own radius, so the geofence deliberately did not move.
+        latitude:
+          type: [number, "null"]
+          description: The geofence in force after the call, null when there is none.
+        longitude:
+          type: [number, "null"]
+        radius_meters:
+          type: [number, "null"]
+        moved_meters:
+          type: number
+          description: How far the fix sat from the centre that was in force before the call.
     DeviceTasks:
       type: object
       required: [active_session, pending_enrolment, server_time]

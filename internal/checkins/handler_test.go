@@ -23,8 +23,9 @@ func TestCheckinHandlerReturnsErrorEnvelopeAndSuccessShape(t *testing.T) {
 	store := &fakeCheckinStore{
 		found: true, registered: true, inserted: true,
 		session: checkins.Session{
-			ID: "2f4e4ed0-490c-4cba-9343-62b0744d6ba7", StartedAt: time.Unix(0, 0), Latitude: 0, Longitude: 0,
-			RadiusMeters: 100, RotatingCode: true, RosterPolicy: checkins.RosterRegisteredOnly,
+			ID: "2f4e4ed0-490c-4cba-9343-62b0744d6ba7", StartedAt: time.Unix(0, 0),
+			Venue:        &checkins.VenueCentre{Latitude: 0, Longitude: 0, RadiusMeters: 100},
+			RotatingCode: true, RosterPolicy: checkins.RosterRegisteredOnly,
 		},
 	}
 	service, err := checkins.NewService(store, clock, secret, time.Minute)
@@ -39,7 +40,9 @@ func TestCheckinHandlerReturnsErrorEnvelopeAndSuccessShape(t *testing.T) {
 		InstitutionID: "institution-1", UserID: "user-1", StudentID: "student-1",
 	}}
 	requestBody := func(code string) []byte {
-		data, marshalErr := json.Marshal(checkins.Request{SessionID: store.session.ID, Code: code})
+		data, marshalErr := json.Marshal(checkins.Request{
+			SessionID: store.session.ID, Code: code, DeviceHash: "device-aaaa",
+		})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
@@ -67,7 +70,7 @@ func TestCheckinHandlerReturnsErrorEnvelopeAndSuccessShape(t *testing.T) {
 		t.Fatalf("valid response = %d %s", validResponse.Code, validResponse.Body.String())
 	}
 
-	unknown := httptest.NewRequest(http.MethodPost, "/checkins", strings.NewReader(`{"session_id":"2f4e4ed0-490c-4cba-9343-62b0744d6ba7","code":"123456","unexpected":true}`))
+	unknown := httptest.NewRequest(http.MethodPost, "/checkins", strings.NewReader(`{"session_id":"2f4e4ed0-490c-4cba-9343-62b0744d6ba7","code":"123456","device_hash":"device-aaaa","unexpected":true}`))
 	unknown = unknown.WithContext(auth.WithPrincipal(unknown.Context(), principal))
 	unknownResponse := httptest.NewRecorder()
 	handler.ServeHTTP(unknownResponse, unknown)

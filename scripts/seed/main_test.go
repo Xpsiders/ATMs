@@ -503,7 +503,7 @@ func TestAttendanceFixturesCoverReportStatesAndBelowThreshold(t *testing.T) {
 			case hasWeb && hasScan:
 				outcomes["verified"] = true
 			case hasWeb && heartbeatByDevice[venueByID(plan.venues, session.venueID).device]:
-				outcomes["suspected_proxy"] = true
+				outcomes["web_only_no_fingerprint"] = true
 			case hasScan && !hasWeb:
 				outcomes["scan_only"] = true
 			}
@@ -528,7 +528,7 @@ func TestAttendanceFixturesCoverReportStatesAndBelowThreshold(t *testing.T) {
 		}
 	}
 	for _, expected := range []string{
-		"verified", "suspected_proxy", "scan_only", "absent", "late", "override_reason", "web_only_unverified",
+		"verified", "web_only_no_fingerprint", "scan_only", "absent", "late", "override_reason", "web_only_unverified",
 	} {
 		if !outcomes[expected] {
 			t.Errorf("attendance fixture missing state %q (sessions found=%d)", expected, len(sessionByID))

@@ -195,11 +195,142 @@ func TestVenueMutationValidationRejectsInvalidCoordinatesAndEmptyPatch(t *testin
 		t.Fatal(err)
 	}
 	if _, err := service.CreateVenue(context.Background(), "inst", "user", catalogue.VenueInput{
-		Name: "Room", Latitude: 91, Longitude: 0, RadiusMeters: 100,
+		Name: "Room", Latitude: degrees(91), Longitude: degrees(0), RadiusMeters: 100,
 	}); !errors.Is(err, catalogue.ErrInvalidRequest) {
 		t.Fatalf("out-of-range venue create error = %v", err)
+	}
+	// Half a position is no position: it would otherwise default the missing
+	// half to zero and place the venue in the Gulf of Guinea.
+	if _, err := service.CreateVenue(context.Background(), "inst", "user", catalogue.VenueInput{
+		Name: "Room", Latitude: degrees(6.5),
+	}); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("half-supplied coordinate error = %v", err)
 	}
 	if _, err := service.UpdateVenue(context.Background(), "inst", "user", "venue", catalogue.VenueUpdate{}); !errors.Is(err, catalogue.ErrInvalidRequest) {
 		t.Fatalf("empty venue update error = %v", err)
 	}
 }
+
+// venueLocationStore is a fakeStore that also records captured venue
+// positions and created venues.
+type venueLocationStore struct {
+	*fakeStore
+	captured  catalogue.VenueLocation
+	createdIn catalogue.VenueInput
+	venueID   string
+}
+
+func (f *venueLocationStore) CreateVenue(_ context.Context, _, _ string, input catalogue.VenueInput) (map[string]any, error) {
+	f.createdIn = input
+	return map[string]any{"id": "venue", "radius_meters": input.RadiusMeters}, nil
+}
+
+func (f *venueLocationStore) UpdateVenue(context.Context, string, string, string, catalogue.VenueUpdate) (map[string]any, error) {
+	return map[string]any{"id": "venue"}, nil
+}
+
+func (f *venueLocationStore) DeactivateVenue(context.Context, string, string, string) error {
+	return nil
+}
+
+func (f *venueLocationStore) CaptureVenueLocation(
+	_ context.Context,
+	_, _, venueID string,
+	location catalogue.VenueLocation,
+) (map[string]any, error) {
+	f.venueID = venueID
+	f.captured = location
+	return map[string]any{"id": venueID}, nil
+}
+
+// A venue can be created without a radius; the default saves the caller from
+// inventing a number.
+func TestCreateVenueDefaultsTheRadius(t *testing.T) {
+	t.Parallel()
+	store := &venueLocationStore{fakeStore: &fakeStore{allowed: true}}
+	service, err := catalogue.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateVenue(context.Background(), "inst", "user", catalogue.VenueInput{
+		Name: " Room ", Latitude: degrees(6.5), Longitude: degrees(3.3),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if store.createdIn.RadiusMeters != catalogue.DefaultVenueRadiusMeters {
+		t.Fatalf("radius = %d, want the default %d", store.createdIn.RadiusMeters, catalogue.DefaultVenueRadiusMeters)
+	}
+	if store.createdIn.Name != "Room" {
+		t.Fatalf("name = %q, want it trimmed", store.createdIn.Name)
+	}
+	// A venue is a named room; it may be created without ever being stood in,
+	// and then carries no radius either.
+	if _, err := service.CreateVenue(context.Background(), "inst", "user", catalogue.VenueInput{
+		Name: "Unsurveyed Room",
+	}); err != nil {
+		t.Fatalf("venue without coordinates should be creatable: %v", err)
+	}
+	if store.createdIn.Latitude != nil || store.createdIn.RadiusMeters != 0 {
+		t.Fatalf("coordinate-less venue gained a position: %+v", store.createdIn)
+	}
+	if _, err := service.CreateVenue(context.Background(), "inst", "user", catalogue.VenueInput{
+		Name: "Room", RadiusMeters: catalogue.MaxVenueRadiusMeters + 1,
+	}); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("oversized radius error = %v", err)
+	}
+}
+
+func TestCaptureVenueLocationAcceptsAGoodFixAndRejectsAVagueOne(t *testing.T) {
+	t.Parallel()
+	store := &venueLocationStore{fakeStore: &fakeStore{allowed: true}}
+	service, err := catalogue.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := catalogue.VenueLocation{Latitude: 6.5244, Longitude: 3.3792, AccuracyMeters: 12}
+	if _, err := service.CaptureVenueLocation(context.Background(), "inst", "user", "venue", good); err != nil {
+		t.Fatal(err)
+	}
+	if store.venueID != "venue" || store.captured != good {
+		t.Fatalf("captured venue=%q location=%+v", store.venueID, store.captured)
+	}
+	vague := good
+	vague.AccuracyMeters = catalogue.MaxCaptureAccuracyMeters + 1
+	if _, err := service.CaptureVenueLocation(context.Background(), "inst", "user", "venue", vague); !errors.Is(err, catalogue.ErrInaccurateLocation) {
+		t.Fatalf("vague fix error = %v, want ErrInaccurateLocation", err)
+	}
+	outOfRange := good
+	outOfRange.Latitude = 91
+	if _, err := service.CaptureVenueLocation(context.Background(), "inst", "user", "venue", outOfRange); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("out-of-range latitude error = %v", err)
+	}
+	oversized := catalogue.MaxVenueRadiusMeters + 1
+	withRadius := good
+	withRadius.RadiusMeters = &oversized
+	if _, err := service.CaptureVenueLocation(context.Background(), "inst", "user", "venue", withRadius); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("oversized radius error = %v", err)
+	}
+	if _, err := service.CaptureVenueLocation(context.Background(), "inst", "user", "", good); !errors.Is(err, catalogue.ErrInvalidRequest) {
+		t.Fatalf("missing venue ID error = %v", err)
+	}
+}
+
+func TestVenueRadiusFromAccuracy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		accuracy float64
+		want     int
+	}{
+		{0, catalogue.DefaultVenueRadiusMeters},
+		{10, catalogue.DefaultVenueRadiusMeters},
+		{catalogue.DefaultVenueRadiusMeters + 0.5, catalogue.DefaultVenueRadiusMeters + 1},
+		{catalogue.MaxVenueRadiusMeters * 2, catalogue.MaxVenueRadiusMeters},
+	}
+	for _, tc := range tests {
+		if got := catalogue.VenueRadiusFromAccuracy(tc.accuracy); got != tc.want {
+			t.Fatalf("VenueRadiusFromAccuracy(%v) = %d, want %d", tc.accuracy, got, tc.want)
+		}
+	}
+}
+
+func degrees(value float64) *float64 { return &value }

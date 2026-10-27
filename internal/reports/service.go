@@ -127,18 +127,19 @@ type LiveStore interface {
 }
 
 type ReportRow struct {
-	StudentRecordID  string
-	MatricNo         string
-	DisplayName      string
-	DepartmentID     string
-	Level            int
-	OnRoster         bool
-	HasWebCheckin    bool
-	HasFingerprint   bool
-	ScannerAvailable bool
-	OverrideStatus   string
-	WebStatus        string
-	WebCheckinAt     *time.Time
+	StudentRecordID    string
+	MatricNo           string
+	DisplayName        string
+	DepartmentID       string
+	Level              int
+	OnRoster           bool
+	HasWebCheckin      bool
+	HasFingerprint     bool
+	ScannerAvailable   bool
+	OverrideStatus     string
+	WebStatus          string
+	WebCheckinAt       *time.Time
+	LocationUnverified bool
 }
 
 type Service struct {
@@ -189,6 +190,7 @@ func (s *Service) SessionReport(ctx context.Context, institutionID, sessionID, u
 			OnRoster: row.OnRoster, HasWebCheckin: row.HasWebCheckin, HasFingerprint: row.HasFingerprint,
 			ScannerAvailable: row.ScannerAvailable, OverrideStatus: row.OverrideStatus,
 			WebStatus: row.WebStatus, WebCheckinAt: row.WebCheckinAt, ScannerCoverage: coverage,
+			LocationUnverified: row.LocationUnverified,
 		})
 		items = append(items, StudentAttendance{
 			StudentRecordID: row.StudentRecordID, MatricNo: row.MatricNo,
@@ -408,6 +410,7 @@ func (s *Service) LiveSession(ctx context.Context, institutionID, sessionID, use
 			OnRoster: row.OnRoster, HasWebCheckin: row.HasWebCheckin, HasFingerprint: row.HasFingerprint,
 			ScannerAvailable: row.ScannerAvailable, OverrideStatus: row.OverrideStatus,
 			WebStatus: row.WebStatus, WebCheckinAt: row.WebCheckinAt, ScannerCoverage: coverage,
+			LocationUnverified: row.LocationUnverified,
 		})
 		items = append(items, LiveStudent{
 			StudentID: row.StudentRecordID, MatricNo: row.MatricNo, DisplayName: row.DisplayName,

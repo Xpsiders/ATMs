@@ -13,15 +13,16 @@ import (
 
 const autoRegisterClaimedStudent = `-- name: AutoRegisterClaimedStudent :execrows
 WITH claimed_student AS (
-    SELECT institution_id, id, department_id, level
+    SELECT student_records.institution_id, student_records.id,
+           student_records.department_id, student_records.level
     FROM student_records
-    WHERE institution_id = $1
-      AND id = $2
+    WHERE student_records.institution_id = $2
+      AND student_records.id = $3
 )
 INSERT INTO course_registrations (
     institution_id, offering_id, student_record_id, status, approved_at
 )
-SELECT student.institution_id, offering.id, student.id, 'approved', $3
+SELECT student.institution_id, offering.id, student.id, 'approved', $1
 FROM claimed_student AS student
 JOIN course_offerings AS offering
   ON offering.institution_id = student.institution_id
@@ -50,17 +51,13 @@ WHERE course_registrations.status <> 'approved'
 `
 
 type AutoRegisterClaimedStudentParams struct {
+	ApprovedAt      pgtype.Timestamptz `json:"approved_at"`
 	InstitutionID   pgtype.UUID        `json:"institution_id"`
 	StudentRecordID pgtype.UUID        `json:"student_record_id"`
-	ApprovedAt      pgtype.Timestamptz `json:"approved_at"`
 }
 
 func (q *Queries) AutoRegisterClaimedStudent(ctx context.Context, arg AutoRegisterClaimedStudentParams) (int64, error) {
-	result, err := q.db.Exec(ctx, autoRegisterClaimedStudent,
-		arg.InstitutionID,
-		arg.StudentRecordID,
-		arg.ApprovedAt,
-	)
+	result, err := q.db.Exec(ctx, autoRegisterClaimedStudent, arg.ApprovedAt, arg.InstitutionID, arg.StudentRecordID)
 	if err != nil {
 		return 0, err
 	}
@@ -348,9 +345,9 @@ type ConvertRotatingSessionToFixedRow struct {
 	VenueID       pgtype.UUID        `json:"venue_id"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
 	EndedAt       pgtype.Timestamptz `json:"ended_at"`
-	Latitude      float64            `json:"latitude"`
-	Longitude     float64            `json:"longitude"`
-	RadiusMeters  int32              `json:"radius_meters"`
+	Latitude      pgtype.Float8      `json:"latitude"`
+	Longitude     pgtype.Float8      `json:"longitude"`
+	RadiusMeters  pgtype.Int4        `json:"radius_meters"`
 	RotatingCode  bool               `json:"rotating_code"`
 	StaticCode    pgtype.Text        `json:"static_code"`
 	CodeExpiresAt pgtype.Timestamptz `json:"code_expires_at"`
@@ -623,7 +620,11 @@ INSERT INTO lecture_sessions (
     started_at, latitude, longitude, radius_meters, rotating_code, static_code,
     code_expires_at, late_after_min
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+WHERE EXISTS (
+    SELECT 1 FROM venues
+    WHERE institution_id = $1 AND id = $3 AND active = true
+)
 ON CONFLICT (institution_id, venue_id) WHERE ended_at IS NULL DO NOTHING
 RETURNING id, institution_id, offering_id, venue_id, started_at, ended_at,
           latitude, longitude, radius_meters, rotating_code, static_code,
@@ -637,9 +638,9 @@ type CreateLectureSessionParams struct {
 	TimetableID     pgtype.UUID        `json:"timetable_id"`
 	StartedByUserID pgtype.UUID        `json:"started_by_user_id"`
 	StartedAt       pgtype.Timestamptz `json:"started_at"`
-	Latitude        float64            `json:"latitude"`
-	Longitude       float64            `json:"longitude"`
-	RadiusMeters    int32              `json:"radius_meters"`
+	Latitude        pgtype.Float8      `json:"latitude"`
+	Longitude       pgtype.Float8      `json:"longitude"`
+	RadiusMeters    pgtype.Int4        `json:"radius_meters"`
 	RotatingCode    bool               `json:"rotating_code"`
 	StaticCode      pgtype.Text        `json:"static_code"`
 	CodeExpiresAt   pgtype.Timestamptz `json:"code_expires_at"`
@@ -653,9 +654,9 @@ type CreateLectureSessionRow struct {
 	VenueID       pgtype.UUID        `json:"venue_id"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
 	EndedAt       pgtype.Timestamptz `json:"ended_at"`
-	Latitude      float64            `json:"latitude"`
-	Longitude     float64            `json:"longitude"`
-	RadiusMeters  int32              `json:"radius_meters"`
+	Latitude      pgtype.Float8      `json:"latitude"`
+	Longitude     pgtype.Float8      `json:"longitude"`
+	RadiusMeters  pgtype.Int4        `json:"radius_meters"`
 	RotatingCode  bool               `json:"rotating_code"`
 	StaticCode    pgtype.Text        `json:"static_code"`
 	CodeExpiresAt pgtype.Timestamptz `json:"code_expires_at"`
@@ -753,6 +754,38 @@ func (q *Queries) CreateStudentRole(ctx context.Context, arg CreateStudentRolePa
 	return err
 }
 
+const deviceUsedInSession = `-- name: DeviceUsedInSession :one
+SELECT EXISTS (
+    SELECT 1 FROM web_checkins
+    WHERE institution_id = $1
+      AND session_id = $2
+      AND student_record_id <> $3
+      AND device_hash = $4
+)
+`
+
+type DeviceUsedInSessionParams struct {
+	InstitutionID   pgtype.UUID `json:"institution_id"`
+	SessionID       pgtype.UUID `json:"session_id"`
+	StudentRecordID pgtype.UUID `json:"student_record_id"`
+	DeviceHash      []byte      `json:"device_hash"`
+}
+
+// One device may record at most one student per session. This is the control
+// that stops a student checking in for absent friends now that a weak or
+// missing location no longer refuses a check-in.
+func (q *Queries) DeviceUsedInSession(ctx context.Context, arg DeviceUsedInSessionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, deviceUsedInSession,
+		arg.InstitutionID,
+		arg.SessionID,
+		arg.StudentRecordID,
+		arg.DeviceHash,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const endLectureSession = `-- name: EndLectureSession :one
 UPDATE lecture_sessions
 SET ended_at = $3
@@ -775,9 +808,9 @@ type EndLectureSessionRow struct {
 	VenueID       pgtype.UUID        `json:"venue_id"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
 	EndedAt       pgtype.Timestamptz `json:"ended_at"`
-	Latitude      float64            `json:"latitude"`
-	Longitude     float64            `json:"longitude"`
-	RadiusMeters  int32              `json:"radius_meters"`
+	Latitude      pgtype.Float8      `json:"latitude"`
+	Longitude     pgtype.Float8      `json:"longitude"`
+	RadiusMeters  pgtype.Int4        `json:"radius_meters"`
 	RotatingCode  bool               `json:"rotating_code"`
 	StaticCode    pgtype.Text        `json:"static_code"`
 	CodeExpiresAt pgtype.Timestamptz `json:"code_expires_at"`
@@ -1018,9 +1051,9 @@ type GetLectureSessionRow struct {
 	VenueID       pgtype.UUID        `json:"venue_id"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
 	EndedAt       pgtype.Timestamptz `json:"ended_at"`
-	Latitude      float64            `json:"latitude"`
-	Longitude     float64            `json:"longitude"`
-	RadiusMeters  int32              `json:"radius_meters"`
+	Latitude      pgtype.Float8      `json:"latitude"`
+	Longitude     pgtype.Float8      `json:"longitude"`
+	RadiusMeters  pgtype.Int4        `json:"radius_meters"`
 	RotatingCode  bool               `json:"rotating_code"`
 	StaticCode    pgtype.Text        `json:"static_code"`
 	CodeExpiresAt pgtype.Timestamptz `json:"code_expires_at"`
@@ -1240,7 +1273,7 @@ func (q *Queries) GetUserRoles(ctx context.Context, arg GetUserRolesParams) ([]G
 const getVenueSettings = `-- name: GetVenueSettings :one
 SELECT latitude, longitude, radius_meters
 FROM venues
-WHERE institution_id = $1 AND id = $2
+WHERE institution_id = $1 AND id = $2 AND active = true
 `
 
 type GetVenueSettingsParams struct {
@@ -1249,9 +1282,9 @@ type GetVenueSettingsParams struct {
 }
 
 type GetVenueSettingsRow struct {
-	Latitude     float64 `json:"latitude"`
-	Longitude    float64 `json:"longitude"`
-	RadiusMeters int32   `json:"radius_meters"`
+	Latitude     pgtype.Float8 `json:"latitude"`
+	Longitude    pgtype.Float8 `json:"longitude"`
+	RadiusMeters pgtype.Int4   `json:"radius_meters"`
 }
 
 func (q *Queries) GetVenueSettings(ctx context.Context, arg GetVenueSettingsParams) (GetVenueSettingsRow, error) {
@@ -1358,16 +1391,16 @@ RETURNING session_id, student_record_id, status, created_at
 `
 
 type InsertWebCheckinParams struct {
-	InstitutionID   pgtype.UUID `json:"institution_id"`
-	SessionID       pgtype.UUID `json:"session_id"`
-	StudentRecordID pgtype.UUID `json:"student_record_id"`
-	Latitude        float64     `json:"latitude"`
-	Longitude       float64     `json:"longitude"`
-	AccuracyMeters  float64     `json:"accuracy_meters"`
-	DistanceMeters  float64     `json:"distance_meters"`
-	DeviceHash      []byte      `json:"device_hash"`
-	OnRoster        bool        `json:"on_roster"`
-	Status          string      `json:"status"`
+	InstitutionID   pgtype.UUID   `json:"institution_id"`
+	SessionID       pgtype.UUID   `json:"session_id"`
+	StudentRecordID pgtype.UUID   `json:"student_record_id"`
+	Latitude        pgtype.Float8 `json:"latitude"`
+	Longitude       pgtype.Float8 `json:"longitude"`
+	AccuracyMeters  pgtype.Float8 `json:"accuracy_meters"`
+	DistanceMeters  pgtype.Float8 `json:"distance_meters"`
+	DeviceHash      []byte        `json:"device_hash"`
+	OnRoster        bool          `json:"on_roster"`
+	Status          string        `json:"status"`
 }
 
 type InsertWebCheckinRow struct {
@@ -1489,10 +1522,14 @@ const isTimetableForOfferingVenue = `-- name: IsTimetableForOfferingVenue :one
 SELECT EXISTS (
     SELECT 1
     FROM timetable
-    WHERE institution_id = $1
-      AND id = $2
-      AND offering_id = $3
-      AND venue_id = $4
+    JOIN venues AS venue
+      ON venue.institution_id = timetable.institution_id
+     AND venue.id = timetable.venue_id
+    WHERE timetable.institution_id = $1
+      AND timetable.id = $2
+      AND timetable.offering_id = $3
+      AND timetable.venue_id = $4
+      AND venue.active = true
 )
 `
 
@@ -1704,11 +1741,11 @@ type ListVenuesParams struct {
 }
 
 type ListVenuesRow struct {
-	ID           pgtype.UUID `json:"id"`
-	Name         string      `json:"name"`
-	Latitude     float64     `json:"latitude"`
-	Longitude    float64     `json:"longitude"`
-	RadiusMeters int32       `json:"radius_meters"`
+	ID           pgtype.UUID   `json:"id"`
+	Name         string        `json:"name"`
+	Latitude     pgtype.Float8 `json:"latitude"`
+	Longitude    pgtype.Float8 `json:"longitude"`
+	RadiusMeters pgtype.Int4   `json:"radius_meters"`
 }
 
 func (q *Queries) ListVenues(ctx context.Context, arg ListVenuesParams) ([]ListVenuesRow, error) {
@@ -1766,9 +1803,9 @@ type LoadCheckinSessionRow struct {
 	ID            pgtype.UUID        `json:"id"`
 	EndedAt       pgtype.Timestamptz `json:"ended_at"`
 	StartedAt     pgtype.Timestamptz `json:"started_at"`
-	Latitude      float64            `json:"latitude"`
-	Longitude     float64            `json:"longitude"`
-	RadiusMeters  int32              `json:"radius_meters"`
+	Latitude      pgtype.Float8      `json:"latitude"`
+	Longitude     pgtype.Float8      `json:"longitude"`
+	RadiusMeters  pgtype.Int4        `json:"radius_meters"`
 	RotatingCode  bool               `json:"rotating_code"`
 	StaticCode    pgtype.Text        `json:"static_code"`
 	CodeExpiresAt pgtype.Timestamptz `json:"code_expires_at"`
@@ -2232,6 +2269,7 @@ func (q *Queries) SearchOfferingsFullText(ctx context.Context, arg SearchOfferin
 const sessionReportPage = `-- name: SessionReportPage :many
 WITH session_info AS (
     SELECT ls.institution_id, ls.id AS session_id, ls.offering_id,
+           ls.radius_meters,
            EXISTS (
                SELECT 1 FROM devices AS scanner
                WHERE scanner.institution_id = ls.institution_id
@@ -2274,7 +2312,15 @@ SELECT
     wc.status AS web_status,
     ao.reason AS override_reason,
     wc.created_at AS web_checkin_at,
-    coalesce(fs.client_scanned_at, fs.created_at) AS fingerprint_scanned_at
+    coalesce(fs.client_scanned_at, fs.created_at) AS fingerprint_scanned_at,
+    -- Location trust is derived, not stored. A fix beyond the venue radius is
+    -- only suspicious when the phone's own reported error cannot explain the
+    -- gap, so the same allowance the check-in applied is re-applied here.
+    -- Keep 250 in step with checkins.MaxAccuracyAllowanceMeters.
+    coalesce(
+        wc.distance_meters > si.radius_meters + least(coalesce(wc.accuracy_meters, 0), 250),
+        false
+    )::boolean AS location_unverified
 FROM candidates AS c
 JOIN student_records AS sr
   ON sr.institution_id = $1 AND sr.id = c.student_record_id
@@ -2325,6 +2371,7 @@ type SessionReportPageRow struct {
 	OverrideReason       pgtype.Text        `json:"override_reason"`
 	WebCheckinAt         pgtype.Timestamptz `json:"web_checkin_at"`
 	FingerprintScannedAt pgtype.Timestamptz `json:"fingerprint_scanned_at"`
+	LocationUnverified   bool               `json:"location_unverified"`
 }
 
 func (q *Queries) SessionReportPage(ctx context.Context, arg SessionReportPageParams) ([]SessionReportPageRow, error) {
@@ -2358,6 +2405,7 @@ func (q *Queries) SessionReportPage(ctx context.Context, arg SessionReportPagePa
 			&i.OverrideReason,
 			&i.WebCheckinAt,
 			&i.FingerprintScannedAt,
+			&i.LocationUnverified,
 		); err != nil {
 			return nil, err
 		}
@@ -2460,7 +2508,7 @@ type SessionRosterAccessParams struct {
 type SessionRosterAccessRow struct {
 	CanView          bool        `json:"can_view"`
 	DepartmentFilter pgtype.UUID `json:"department_filter"`
-	StudentFilter    string      `json:"student_filter"`
+	StudentFilter    interface{} `json:"student_filter"`
 	CanOverride      bool        `json:"can_override"`
 }
 

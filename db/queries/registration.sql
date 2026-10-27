@@ -49,7 +49,7 @@ LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 -- name: SetCourseRegistrationStatus :one
 UPDATE course_registrations
 SET status = $4,
-    approved_at = CASE WHEN $4 = 'approved' THEN $5::timestamptz ELSE NULL END
+    approved_at = CASE WHEN $4 = 'approved' THEN sqlc.arg(approved_at)::timestamptz ELSE NULL END
 WHERE institution_id = $1 AND offering_id = $2 AND student_record_id = $3
   AND status = 'pending'
 RETURNING status;

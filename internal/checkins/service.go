@@ -11,12 +11,12 @@ import (
 )
 
 type Session struct {
-	ID            string
-	EndedAt       *time.Time
-	StartedAt     time.Time
-	Latitude      float64
-	Longitude     float64
-	RadiusMeters  float64
+	ID        string
+	EndedAt   *time.Time
+	StartedAt time.Time
+	// Venue is the session's snapshot of the venue centre, nil when the venue
+	// had no stored coordinates when the session started.
+	Venue         *VenueCentre
 	RotatingCode  bool
 	StaticCode    string
 	CodeExpiresAt *time.Time
@@ -28,37 +28,61 @@ type Store interface {
 	LoadSession(context.Context, string, string) (Session, bool, error)
 	IsRegistered(context.Context, string, string, string) (bool, error)
 	HasCheckin(context.Context, string, string, string) (bool, error)
+	// DeviceUsedInSession reports whether this device hash has already
+	// recorded a different student in this session.
+	DeviceUsedInSession(context.Context, string, string, string, []byte) (bool, error)
 	InsertCheckin(context.Context, CheckinRecord) (bool, error)
 }
 
 type CheckinRecord struct {
-	InstitutionID  string
-	SessionID      string
-	StudentID      string
-	Latitude       float64
-	Longitude      float64
-	AccuracyMeters float64
-	DistanceMeters float64
+	InstitutionID string
+	SessionID     string
+	StudentID     string
+	// Fix and DistanceMeters are nil when the student sent no position, or
+	// when the venue has no centre to measure against.
+	Fix            *Fix
+	DistanceMeters *float64
 	DeviceHash     []byte
 	OnRoster       bool
 	Status         string
 }
 
 type Request struct {
-	SessionID  string  `json:"session_id"`
-	Code       string  `json:"code"`
-	Latitude   float64 `json:"lat"`
-	Longitude  float64 `json:"lng"`
-	Accuracy   float64 `json:"accuracy"`
-	DeviceHash string  `json:"device_hash"`
+	SessionID string `json:"session_id"`
+	Code      string `json:"code"`
+	// Latitude, Longitude, and Accuracy are optional. The browser may refuse
+	// to supply a position, and that is not a reason to refuse the check-in.
+	Latitude   *float64 `json:"lat"`
+	Longitude  *float64 `json:"lng"`
+	Accuracy   *float64 `json:"accuracy"`
+	DeviceHash string   `json:"device_hash"`
+}
+
+// fix builds the optional position from the request. A position needs both
+// coordinates; accuracy defaults to zero, which grants no extra allowance.
+func (r Request) fix() *Fix {
+	if r.Latitude == nil || r.Longitude == nil {
+		return nil
+	}
+	accuracy := 0.0
+	if r.Accuracy != nil {
+		accuracy = *r.Accuracy
+	}
+	return &Fix{Latitude: *r.Latitude, Longitude: *r.Longitude, AccuracyMeters: accuracy}
 }
 
 type CheckinResult struct {
-	SessionID      string  `json:"session_id"`
-	Status         string  `json:"status"`
-	OnRoster       bool    `json:"on_roster"`
-	AccuracyPoor   bool    `json:"accuracy_poor"`
-	DistanceMeters float64 `json:"distance_meters"`
+	SessionID    string `json:"session_id"`
+	Status       string `json:"status"`
+	OnRoster     bool   `json:"on_roster"`
+	AccuracyPoor bool   `json:"accuracy_poor"`
+	// DistanceMeters is null when there was no position to measure, either
+	// because the student sent none or because the venue has no centre.
+	DistanceMeters *float64 `json:"distance_meters"`
+	// LocationUnverified tells the student their attendance was recorded on a
+	// fix their phone's own error cannot explain, so it still needs the
+	// scanner or the lecturer to confirm it.
+	LocationUnverified bool `json:"location_unverified"`
 }
 
 type Clock interface {
@@ -88,7 +112,10 @@ func NewService(store Store, clock Clock, codeSecret []byte, codeWindow time.Dur
 }
 
 func (s *Service) Checkin(ctx context.Context, institutionID, studentID string, request Request) (CheckinResult, ErrorCode, error) {
-	if institutionID == "" || studentID == "" || request.SessionID == "" {
+	// The device hash is the anti-proxy control now that location cannot
+	// refuse a check-in, so an absent one cannot be treated as an opt-out.
+	if institutionID == "" || studentID == "" || request.SessionID == "" ||
+		request.DeviceHash == "" {
 		return CheckinResult{}, ErrInvalidInput, nil
 	}
 	session, found, err := s.store.LoadSession(ctx, institutionID, request.SessionID)
@@ -112,17 +139,28 @@ func (s *Service) Checkin(ctx context.Context, institutionID, studentID string, 
 	if err != nil {
 		return CheckinResult{}, "", fmt.Errorf("check student registration: %w", err)
 	}
+	already, err := s.store.HasCheckin(ctx, institutionID, session.ID, studentID)
+	if err != nil {
+		return CheckinResult{}, "", fmt.Errorf("check existing attendance: %w", err)
+	}
+	// Device binding replaces the geofence as the control on one student
+	// checking in for another, so it is resolved before the decision rather
+	// than after it.
+	hash := sha256.Sum256([]byte(request.DeviceHash))
+	deviceHash := hash[:]
+	deviceUsed, err := s.store.DeviceUsedInSession(ctx, institutionID, session.ID, studentID, deviceHash)
+	if err != nil {
+		return CheckinResult{}, "", fmt.Errorf("check device binding: %w", err)
+	}
 	validation, code := Validate(Input{
 		SessionOpen:    true,
 		CodeValid:      true,
 		OnRoster:       registered,
 		RosterPolicy:   session.RosterPolicy,
-		Latitude:       request.Latitude,
-		Longitude:      request.Longitude,
-		VenueLatitude:  session.Latitude,
-		VenueLongitude: session.Longitude,
-		RadiusMeters:   session.RadiusMeters,
-		AccuracyMeters: request.Accuracy,
+		Fix:            request.fix(),
+		Venue:          session.Venue,
+		AlreadyChecked: already,
+		DeviceUsed:     deviceUsed,
 		Now:            now,
 		StartedAt:      session.StartedAt,
 		LateAfter:      session.LateAfter,
@@ -130,26 +168,13 @@ func (s *Service) Checkin(ctx context.Context, institutionID, studentID string, 
 	if code != "" {
 		return CheckinResult{}, code, nil
 	}
-	already, err := s.store.HasCheckin(ctx, institutionID, session.ID, studentID)
-	if err != nil {
-		return CheckinResult{}, "", fmt.Errorf("check existing attendance: %w", err)
-	}
-	if already {
-		return CheckinResult{}, ErrAlreadyExists, nil
-	}
 	status := "present"
 	if validation.Late {
 		status = "late"
 	}
-	deviceHash := []byte(nil)
-	if request.DeviceHash != "" {
-		hash := sha256.Sum256([]byte(request.DeviceHash))
-		deviceHash = hash[:]
-	}
 	inserted, err := s.store.InsertCheckin(ctx, CheckinRecord{
 		InstitutionID: institutionID, SessionID: session.ID, StudentID: studentID,
-		Latitude: request.Latitude, Longitude: request.Longitude,
-		AccuracyMeters: request.Accuracy, DistanceMeters: validation.DistanceMeters,
+		Fix: request.fix(), DistanceMeters: validation.DistanceMeters,
 		DeviceHash: deviceHash, OnRoster: validation.OnRoster, Status: status,
 	})
 	if err != nil {
@@ -161,5 +186,6 @@ func (s *Service) Checkin(ctx context.Context, institutionID, studentID string, 
 	return CheckinResult{
 		SessionID: session.ID, Status: status, OnRoster: validation.OnRoster,
 		AccuracyPoor: validation.AccuracyPoor, DistanceMeters: validation.DistanceMeters,
+		LocationUnverified: validation.LocationUnverified,
 	}, "", nil
 }

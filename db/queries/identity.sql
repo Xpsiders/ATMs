@@ -98,10 +98,11 @@ VALUES ($1, $2, $3);
 
 -- name: AutoRegisterClaimedStudent :execrows
 WITH claimed_student AS (
-    SELECT institution_id, id, department_id, level
+    SELECT student_records.institution_id, student_records.id,
+           student_records.department_id, student_records.level
     FROM student_records
-    WHERE institution_id = sqlc.arg(institution_id)
-      AND id = sqlc.arg(student_record_id)
+    WHERE student_records.institution_id = sqlc.arg(institution_id)
+      AND student_records.id = sqlc.arg(student_record_id)
 )
 INSERT INTO course_registrations (
     institution_id, offering_id, student_record_id, status, approved_at
@@ -443,6 +444,18 @@ SELECT EXISTS (
     WHERE institution_id = $1 AND session_id = $2 AND student_record_id = $3
 );
 
+-- name: DeviceUsedInSession :one
+-- One device may record at most one student per session. This is the control
+-- that stops a student checking in for absent friends now that a weak or
+-- missing location no longer refuses a check-in.
+SELECT EXISTS (
+    SELECT 1 FROM web_checkins
+    WHERE institution_id = $1
+      AND session_id = $2
+      AND student_record_id <> $3
+      AND device_hash = $4
+);
+
 -- name: InsertFingerprintScan :one
 INSERT INTO fingerprint_scans (
     institution_id, session_id, student_record_id, device_id, confidence, client_scanned_at
@@ -764,6 +777,7 @@ LIMIT sqlc.arg(page_size) OFFSET sqlc.arg(page_offset);
 -- name: SessionReportPage :many
 WITH session_info AS (
     SELECT ls.institution_id, ls.id AS session_id, ls.offering_id,
+           ls.radius_meters,
            EXISTS (
                SELECT 1 FROM devices AS scanner
                WHERE scanner.institution_id = ls.institution_id
@@ -806,7 +820,15 @@ SELECT
     wc.status AS web_status,
     ao.reason AS override_reason,
     wc.created_at AS web_checkin_at,
-    coalesce(fs.client_scanned_at, fs.created_at) AS fingerprint_scanned_at
+    coalesce(fs.client_scanned_at, fs.created_at) AS fingerprint_scanned_at,
+    -- Location trust is derived, not stored. A fix beyond the venue radius is
+    -- only suspicious when the phone's own reported error cannot explain the
+    -- gap, so the same allowance the check-in applied is re-applied here.
+    -- Keep 250 in step with checkins.MaxAccuracyAllowanceMeters.
+    coalesce(
+        wc.distance_meters > si.radius_meters + least(coalesce(wc.accuracy_meters, 0), 250),
+        false
+    )::boolean AS location_unverified
 FROM candidates AS c
 JOIN student_records AS sr
   ON sr.institution_id = $1 AND sr.id = c.student_record_id

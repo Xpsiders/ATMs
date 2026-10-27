@@ -86,11 +86,11 @@ RETURNING status
 `
 
 type CreateCourseRegistrationParams struct {
-	InstitutionID   pgtype.UUID `json:"institution_id"`
-	OfferingID      pgtype.UUID `json:"offering_id"`
-	StudentRecordID pgtype.UUID `json:"student_record_id"`
-	Status          string      `json:"status"`
-	Column5         interface{} `json:"column_5"`
+	InstitutionID   pgtype.UUID        `json:"institution_id"`
+	OfferingID      pgtype.UUID        `json:"offering_id"`
+	StudentRecordID pgtype.UUID        `json:"student_record_id"`
+	Status          string             `json:"status"`
+	Column5         pgtype.Timestamptz `json:"column_5"`
 }
 
 func (q *Queries) CreateCourseRegistration(ctx context.Context, arg CreateCourseRegistrationParams) (string, error) {

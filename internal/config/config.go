@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -23,6 +24,11 @@ type Config struct {
 	MailFrom             string
 	AppEnv               string
 	DeviceOfflineSeconds int
+	// CheckinCodeWindow is how long a rotating session code stays valid. It is
+	// the main limit on a student forwarding the code to an absent friend, so
+	// it is kept short; the scanner, not a longer window, is what tolerates a
+	// slow connection.
+	CheckinCodeWindow time.Duration
 }
 
 func Load() (Config, error) {
@@ -80,6 +86,12 @@ func Load() (Config, error) {
 		return Config{}, errors.New("DEVICE_OFFLINE_SECONDS must be a positive integer")
 	}
 	cfg.DeviceOfflineSeconds = deviceOfflineSeconds
+
+	codeWindowSeconds, err := strconv.Atoi(envOr("CHECKIN_CODE_WINDOW_SECONDS", "30"))
+	if err != nil || codeWindowSeconds < 10 || codeWindowSeconds > 300 {
+		return Config{}, errors.New("CHECKIN_CODE_WINDOW_SECONDS must be between 10 and 300")
+	}
+	cfg.CheckinCodeWindow = time.Duration(codeWindowSeconds) * time.Second
 
 	switch strings.ToLower(envOr("LOG_LEVEL", "info")) {
 	case "debug":

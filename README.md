@@ -49,14 +49,77 @@ there for login. Newly created scanner keys and the pending invitation token
 are displayed only once; reruns preserve them. To recreate only the demo
 institution and generate new keys, run `make seed ARGS=--reset`.
 
-### Set demo venues to your location
+### A venue's location comes from the lecturer's device
 
-In Google Maps, right-click your physical position and copy the coordinates;
+Nobody types coordinates, and nobody has to visit a room to set them up. A
+venue needs only a name; its position is optional metadata that the first
+lecturer to teach there supplies without thinking about it.
+
+When a lecturer starts a class, the app sends the position the device already
+knows:
+
+```http
+POST /sessions
+{"offering_id": "...", "venue_id": "...", "rotating_code": true,
+ "latitude": 6.5244, "longitude": 3.3792, "accuracy_meters": 12.5}
+```
+
+Get the fix from `navigator.geolocation.getCurrentPosition` with
+`{enableHighAccuracy: true, timeout: 15000, maximumAge: 0}` and send
+`coords.accuracy` as `accuracy_meters` unmodified — the server uses it to
+decide whether to trust the reading. The `201` response reports what it did as
+`location_source`:
+
+| `location_source` | Meaning |
+|---|---|
+| `device` | The lecturer's fix centred the session **and** recalibrated the venue, so the next class in that room starts from a good anchor. |
+| `venue` | The fix was absent or vaguer than 100 metres, so the venue's stored centre was used instead. |
+| `none` | Neither supplied a centre. The session has no geofence and check-ins at it carry no distance. |
+
+**Never block starting a class on geolocation.** If permission is denied or the
+fix times out, send the request without the three fields. Attendance still
+works; location is evidence, not a gate.
+
+While the session is open, post the current fix again every five minutes and
+whenever the app returns to the foreground:
+
+```http
+POST /sessions/{id}/location
+{"latitude": 6.5244, "longitude": 3.3792, "accuracy_meters": 12.5}
+```
+
+The response carries the geofence in force afterwards and an `outcome`:
+
+| `outcome` | Meaning |
+|---|---|
+| `refined` | The centre moved to the new fix and the venue was recalibrated too. |
+| `established` | The venue had no centre at all; this fix became its first. |
+| `unchanged` | The fix agreed with the current centre (within 10 metres). No UI needed. |
+| `rejected_accuracy` | Vaguer than 100 metres, so it was ignored. No UI needed. |
+| `rejected_distance` | Outside the session's own radius, so the check-in area deliberately did **not** move. Prompt the lecturer — "You seem to be away from the room" — rather than erroring, and offer a "Recalibrate this room" action. |
+
+The geofence does not follow the lecturer out of the room: if it did, every
+student still sitting in the class would fall outside it the moment the
+lecturer stepped into their office. For the case where the lecturer really is
+in the right place and the room's saved location is wrong, the explicit
+recalibrate action posts the current fix to `POST /venues/{id}/location`, which
+is open to administrators over the venue's department and to any lecturer who
+teaches there. Every path audits `venue.location_captured`.
+
+`POST /venues` defaults `radius_meters` to 75 metres when a position is given
+and caps it at 2000 metres. An existing radius is never overwritten by a
+captured fix — a fix says where a room is, not how big it is.
+
+### Set demo seed venues to your location
+
+This applies to the demo seed data only. For real venues use the capture
+endpoint above. In Google Maps, right-click your physical position and copy the
+coordinates;
 enter latitude first and longitude second. Indoor browser location can be off
 by tens of metres, so a venue radius of 150–200 metres is a sensible starting
 point for check-in testing. The seed places three venues at or within 25 metres
 of the configured origin and adds a fourth venue about 5 km away for testing
-`outside_radius`.
+`location_unverified`.
 
 Set `SEED_ORIGIN_LAT`, `SEED_ORIGIN_LNG`, and optionally
 `SEED_VENUE_RADIUS_M` in the repository-root `.env` file (the radius defaults
@@ -80,7 +143,44 @@ docker compose run --rm seed seed --update-venues
 For a host Go run, use `make set-venue` instead of the Go command when GNU Make
 is installed. The command prints the origin and every seeded venue's coordinates.
 If the origin variables are unset, the seed uses placeholder coordinates and
-warns that check-ins from your actual location will fail with `outside_radius`.
+warns that check-ins from your actual location will be recorded as
+`location_unverified`.
+
+## When a student's location does not match the venue
+
+Nothing refuses a check-in on location. A student on a cheap or indoor-bound
+handset was being denied attendance for a hardware limit they cannot fix, so
+the position is now recorded as evidence and, where it cannot be explained,
+flagged for the lecturer:
+
+| Fix | Outcome |
+|---|---|
+| Inside the venue radius | Recorded normally. |
+| Outside the radius, but the phone's own reported accuracy covers the gap (capped at 250 metres past it) | Recorded normally. |
+| Further out than the accuracy can explain | Recorded, with `location_unverified: true` in the response. The session report shows the row as `web_only_unverified` with reason `location_unverified` for the lecturer to confirm. |
+| No position at all (permission denied, or the venue has no centre) | Recorded, with `distance_meters: null`. |
+
+What stops a student checking in for absent friends is **device binding**, not
+distance: one device may record at most one student per session, so a second
+student from the same phone is refused with `device_already_used` (409).
+`device_hash` is required on `POST /checkins` for that reason.
+
+A student whose fix was flagged still has two routes to a clean record, both
+already in the API:
+
+1. **The fingerprint scanner in the room.** A matching scan verifies them
+   outright — a biometric at the venue is stronger evidence than any GPS fix,
+   so a scan upgrades a weak or missing web check-in to `verified`.
+2. **A lecturer override.** After the class ends,
+   `POST /sessions/{id}/overrides/bulk` sets the status for one or many students
+   with a recorded reason code and an audit entry (it returns 409 while the
+   session is still open). An override takes precedence over every other
+   signal, so it also clears a `location_unverified` flag.
+
+If a whole room comes back `location_unverified`, the venue's stored centre is
+wrong rather than the students' phones. The lecturer's next class there fixes it
+on its own, or they can recalibrate it immediately with
+`POST /venues/{id}/location` from inside the room.
 
 ## Commands
 
@@ -173,7 +273,9 @@ lecturer already sees their sessions' live counts, report, roster, and overrides
   six-digit code; each code is capped at five failed attempts and expires after
   15 minutes.
 - Venue management is available through `POST /venues`, `PATCH /venues/{id}`,
-  and `DELETE /venues/{id}` (soft deactivation). Department/faculty scopes
+  `POST /venues/{id}/location` (store a position captured inside the room so
+  nobody types coordinates), and `DELETE /venues/{id}` (soft deactivation).
+  Department/faculty scopes
   require an associated `department_id`; actions are audited. Academic session
   and semester CRUD is audited, and setting an academic session's `current`
   field atomically clears the previous current session.

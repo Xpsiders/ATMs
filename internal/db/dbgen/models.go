@@ -87,14 +87,20 @@ type Department struct {
 }
 
 type Device struct {
-	ID            pgtype.UUID        `json:"id"`
-	InstitutionID pgtype.UUID        `json:"institution_id"`
-	VenueID       pgtype.UUID        `json:"venue_id"`
-	Name          string             `json:"name"`
-	KeyHash       []byte             `json:"key_hash"`
-	DisabledAt    pgtype.Timestamptz `json:"disabled_at"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	LastSeenAt    pgtype.Timestamptz `json:"last_seen_at"`
+	ID                pgtype.UUID        `json:"id"`
+	InstitutionID     pgtype.UUID        `json:"institution_id"`
+	VenueID           pgtype.UUID        `json:"venue_id"`
+	Name              string             `json:"name"`
+	KeyHash           []byte             `json:"key_hash"`
+	DisabledAt        pgtype.Timestamptz `json:"disabled_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	LastSeenAt        pgtype.Timestamptz `json:"last_seen_at"`
+	PairedAt          pgtype.Timestamptz `json:"paired_at"`
+	FirmwareVersion   pgtype.Text        `json:"firmware_version"`
+	BatteryPercent    pgtype.Int2        `json:"battery_percent"`
+	PendingQueueDepth pgtype.Int4        `json:"pending_queue_depth"`
+	FreeStorageBytes  pgtype.Int8        `json:"free_storage_bytes"`
+	StatusReportedAt  pgtype.Timestamptz `json:"status_reported_at"`
 }
 
 type DeviceHeartbeat struct {
@@ -102,6 +108,17 @@ type DeviceHeartbeat struct {
 	InstitutionID pgtype.UUID        `json:"institution_id"`
 	DeviceID      pgtype.UUID        `json:"device_id"`
 	HeartbeatAt   pgtype.Timestamptz `json:"heartbeat_at"`
+}
+
+type DevicePairingCode struct {
+	ID              pgtype.UUID        `json:"id"`
+	InstitutionID   pgtype.UUID        `json:"institution_id"`
+	DeviceID        pgtype.UUID        `json:"device_id"`
+	CodeHash        []byte             `json:"code_hash"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt      pgtype.Timestamptz `json:"consumed_at"`
+	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 type DeviceSlot struct {
@@ -136,6 +153,7 @@ type EmailOutbox struct {
 	AvailableAt   pgtype.Timestamptz `json:"available_at"`
 	SentAt        pgtype.Timestamptz `json:"sent_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	LockedAt      pgtype.Timestamptz `json:"locked_at"`
 }
 
 type EmailVerification struct {
@@ -205,9 +223,9 @@ type LectureSession struct {
 	StartedByUserID pgtype.UUID        `json:"started_by_user_id"`
 	StartedAt       pgtype.Timestamptz `json:"started_at"`
 	EndedAt         pgtype.Timestamptz `json:"ended_at"`
-	Latitude        float64            `json:"latitude"`
-	Longitude       float64            `json:"longitude"`
-	RadiusMeters    int32              `json:"radius_meters"`
+	Latitude        pgtype.Float8      `json:"latitude"`
+	Longitude       pgtype.Float8      `json:"longitude"`
+	RadiusMeters    pgtype.Int4        `json:"radius_meters"`
 	RotatingCode    bool               `json:"rotating_code"`
 	StaticCode      pgtype.Text        `json:"static_code"`
 	CodeExpiresAt   pgtype.Timestamptz `json:"code_expires_at"`
@@ -246,6 +264,7 @@ type PasswordReset struct {
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 	ConsumedAt    pgtype.Timestamptz `json:"consumed_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	Attempts      int32              `json:"attempts"`
 }
 
 type Programme struct {
@@ -298,6 +317,7 @@ type SignupRequest struct {
 	ReviewedByUserID pgtype.UUID        `json:"reviewed_by_user_id"`
 	ReviewedAt       pgtype.Timestamptz `json:"reviewed_at"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	DepartmentID     pgtype.UUID        `json:"department_id"`
 }
 
 type StaffRecord struct {
@@ -311,6 +331,15 @@ type StaffRecord struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
+type StudentFingerprint struct {
+	InstitutionID      pgtype.UUID        `json:"institution_id"`
+	StudentRecordID    pgtype.UUID        `json:"student_record_id"`
+	Template           []byte             `json:"template"`
+	EnrolledByDeviceID pgtype.UUID        `json:"enrolled_by_device_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type StudentRecord struct {
 	ID              pgtype.UUID        `json:"id"`
 	InstitutionID   pgtype.UUID        `json:"institution_id"`
@@ -322,6 +351,26 @@ type StudentRecord struct {
 	Level           int32              `json:"level"`
 	ClaimedByUserID pgtype.UUID        `json:"claimed_by_user_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type TeachingRequest struct {
+	ID                   pgtype.UUID        `json:"id"`
+	InstitutionID        pgtype.UUID        `json:"institution_id"`
+	LecturerUserID       pgtype.UUID        `json:"lecturer_user_id"`
+	CourseID             pgtype.UUID        `json:"course_id"`
+	SemesterID           pgtype.UUID        `json:"semester_id"`
+	Level                int32              `json:"level"`
+	RegistrationMode     string             `json:"registration_mode"`
+	RosterPolicy         string             `json:"roster_policy"`
+	MinAttendancePct     pgtype.Numeric     `json:"min_attendance_pct"`
+	LateCountsAsAttended bool               `json:"late_counts_as_attended"`
+	AutoTargets          []byte             `json:"auto_targets"`
+	Timetable            []byte             `json:"timetable"`
+	Status               string             `json:"status"`
+	ReviewedByUserID     pgtype.UUID        `json:"reviewed_by_user_id"`
+	ReviewedAt           pgtype.Timestamptz `json:"reviewed_at"`
+	OfferingID           pgtype.UUID        `json:"offering_id"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 }
 
 type Timetable struct {
@@ -353,20 +402,22 @@ type Venue struct {
 	ID            pgtype.UUID        `json:"id"`
 	InstitutionID pgtype.UUID        `json:"institution_id"`
 	Name          string             `json:"name"`
-	Latitude      float64            `json:"latitude"`
-	Longitude     float64            `json:"longitude"`
-	RadiusMeters  int32              `json:"radius_meters"`
+	Latitude      pgtype.Float8      `json:"latitude"`
+	Longitude     pgtype.Float8      `json:"longitude"`
+	RadiusMeters  pgtype.Int4        `json:"radius_meters"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	DepartmentID  pgtype.UUID        `json:"department_id"`
+	Active        bool               `json:"active"`
 }
 
 type WebCheckin struct {
 	InstitutionID   pgtype.UUID        `json:"institution_id"`
 	SessionID       pgtype.UUID        `json:"session_id"`
 	StudentRecordID pgtype.UUID        `json:"student_record_id"`
-	Latitude        float64            `json:"latitude"`
-	Longitude       float64            `json:"longitude"`
-	AccuracyMeters  float64            `json:"accuracy_meters"`
-	DistanceMeters  float64            `json:"distance_meters"`
+	Latitude        pgtype.Float8      `json:"latitude"`
+	Longitude       pgtype.Float8      `json:"longitude"`
+	AccuracyMeters  pgtype.Float8      `json:"accuracy_meters"`
+	DistanceMeters  pgtype.Float8      `json:"distance_meters"`
 	DeviceHash      []byte             `json:"device_hash"`
 	OnRoster        bool               `json:"on_roster"`
 	Status          string             `json:"status"`

@@ -59,8 +59,8 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    origin and every venue coordinate. Three venues are at/within 25 metres of
    the origin; **Far Test Venue (5 km)** is intentionally about 5 km away.
    With neither origin variable set, the seed uses placeholder coordinates and
-   warns that check-ins from your actual location will fail with
-   `outside_radius`.
+   warns that check-ins from your actual location will be recorded as
+   `location_unverified`.
 
    Start the API in a second CMD window with configured secrets:
 
@@ -202,11 +202,36 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    Import errors and logs must not disclose CSV row values.
 
 7. **Session control.** An assigned offering lecturer or coordinator can start
-   a session. Omit coordinates/radius to copy them from the venue:
+   a session. Omit the location fields to copy the venue's centre, or send the
+   lecturer device's own fix to centre the class on it and recalibrate the room:
 
    ```cmd
-   curl.exe -i -X POST http://localhost:8080/sessions -H "Authorization: Bearer ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"offering_id\":\"OFFERING_UUID\",\"venue_id\":\"VENUE_UUID\",\"rotating_code\":true,\"late_after_min\":10}"
+   curl.exe -i -X POST http://localhost:8080/sessions -H "Authorization: Bearer ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"offering_id\":\"OFFERING_UUID\",\"venue_id\":\"VENUE_UUID\",\"rotating_code\":true,\"late_after_min\":10,\"latitude\":6.5244,\"longitude\":3.3792,\"accuracy_meters\":12.5}"
    ```
+
+   Check `location_source` in the response: `device` when the fix was used and
+   the venue recalibrated, `venue` when the fix was absent or vaguer than 100
+   metres, `none` when neither supplied a centre. Send the body without the
+   three location fields and confirm the session still starts — a denied
+   geolocation permission must never block a class.
+
+   **Re-check the position during the session.** With the session open:
+
+   ```cmd
+   curl.exe -i -X POST http://localhost:8080/sessions/SESSION_UUID/location -H "Authorization: Bearer ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"latitude\":6.5244,\"longitude\":3.3792,\"accuracy_meters\":12.5}"
+   ```
+
+   Expect `200` with `outcome`, the geofence in force afterwards, and
+   `moved_meters`. Exercise each outcome: a point within 10 metres of the
+   centre gives `unchanged`; a point 30–50 metres away (inside the radius)
+   gives `refined` and must also update the venue row; the coordinates of
+   **Far Test Venue (5 km)** give `rejected_distance` and must leave
+   `lecture_sessions.latitude` untouched; an `accuracy_meters` of `250` gives
+   `rejected_accuracy`. Against a session started at a venue whose
+   `latitude`/`longitude`/`radius_meters` are NULL, a fix with good accuracy
+   gives `established` and fills in both the session and the venue. Confirm an
+   `audit_log` row with action `venue.location_captured` for each accepted fix,
+   and a `409 session_closed` after the session ends.
 
    The seeded lecturers are assigned to the seeded offerings, and each
    offering has a timetable entry linked to its venue. Use the IDs printed by
@@ -257,18 +282,58 @@ double quotes in `--data` JSON with single-quoted JSON strings.
 
    Replace the example code and coordinates with the actual code and a point
    within the session radius. Expect `201` with `status`, `on_roster`,
-   `accuracy_poor`, and `distance_meters`. Try a wrong/expired code
-   (`wrong_or_expired_code`), an outside point (`outside_radius`), an
-   unregistered student under `registered_only` (`not_on_roster`), an ended
-   session (`session_closed`), and repeating a successful check-in
-   (`already_checked_in`, HTTP `409`).
+   `accuracy_poor`, `distance_meters`, and `location_unverified: false`. Try a
+   wrong/expired code (`wrong_or_expired_code`), an unregistered student under
+   `registered_only` (`not_on_roster`), an ended session (`session_closed`),
+   and repeating a successful check-in (`already_checked_in`, HTTP `409`).
 
-   **Test the geofence rejection.** Use the same currently open session and
+   **Confirm location never refuses anyone.** Use the same open session and
    valid code, but set `lat` and `lng` to the coordinates printed for **Far
-   Test Venue (5 km)**. Since that session uses a near-origin venue snapshot,
-   expect `400 outside_radius`. Use a fresh registered student or start another
-   session for a subsequent successful check-in because check-ins are unique
-   per student/session.
+   Test Venue (5 km)** with a small `accuracy` such as `5`. Expect `201` with
+   `location_unverified: true`, not a `400`: a position the phone's own error
+   cannot explain is flagged for the lecturer, never refused. Omit `lat`, `lng`,
+   and `accuracy` entirely for another student and expect `201` with
+   `distance_meters: null`. Use a fresh registered student for each attempt
+   because check-ins are unique per student/session.
+
+   **Test the poor-GPS tolerance.** Send a point just outside the session
+   radius (the seed radius defaults to 150 metres, so about 0.0018 degrees of
+   latitude is roughly 200 metres) together with an `accuracy` large enough to
+   cover the gap, for example `120`. Expect `201` with
+   `location_unverified: false`: within the phone's own reported error, capped
+   at 250 metres past the radius, the fix is simply accepted.
+
+   **Test device binding.** This is what now stops a student checking in for
+   absent friends. Check one student in, then send a second registered
+   student's check-in for the same session with the same `device_hash`. Expect
+   `409 device_already_used`. Confirm a request with no `device_hash` at all is
+   refused with `400 invalid_checkin_location`, since an absent hash cannot be
+   treated as an opt-out.
+
+   Then open `GET /sessions/{id}/live` (or the session report once closed) and
+   confirm the tolerated student appears as `web_only_unverified` with reason
+   `location_unverified`. A matching fingerprint
+   scan for that student must upgrade the row to `verified`, and a closed-session
+   `POST /sessions/{id}/overrides/bulk` with `status: present` must take
+   precedence over both.
+
+   **Recalibrate a room explicitly.** This is the "Recalibrate this room"
+   action behind a `rejected_distance` outcome. As an administrator over the
+   venue's department, or as a lecturer who teaches at the venue:
+
+   ```cmd
+   curl.exe -i -X POST http://localhost:8080/venues/VENUE_UUID/location -H "Authorization: Bearer ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"latitude\":6.5244,\"longitude\":3.3792,\"accuracy_meters\":12.5}"
+   ```
+
+   Expect `200` with the stored coordinates and radius. Repeat with
+   `accuracy_meters` of `250` and expect `400 location_too_inaccurate`. Repeat
+   as a user who is neither an administrator over the department nor a lecturer
+   timetabled at the venue and expect `403`. Confirm an `audit_log` row with
+   action `venue.location_captured`, and that a session started afterwards at
+   that venue (with no location fields in the body) inherits the newly captured
+   coordinates. Also create a venue with only a name (`POST /venues`) and
+   confirm its `latitude`, `longitude`, and `radius_meters` are all NULL rather
+   than zero.
 
 9. **Scanner task polling.** Device keys are not yet provisioned by an API.
    For a test, use a device key whose SHA-256 hash has been inserted for a

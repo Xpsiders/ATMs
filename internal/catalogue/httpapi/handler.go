@@ -37,6 +37,7 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.Get("/venues", h.venues)
 	router.Post("/venues", h.createVenue)
 	router.Patch("/venues/{id}", h.updateVenue)
+	router.Post("/venues/{id}/location", h.captureVenueLocation)
 	router.Delete("/venues/{id}", h.deactivateVenue)
 	router.Get("/institutions", h.list(catalogue.Institutions))
 	router.Get("/institutions/{id}", h.get(catalogue.Institutions))
@@ -144,6 +145,37 @@ func (h *Handler) updateVenue(w http.ResponseWriter, r *http.Request) {
 		principal.Identity.UserID, venueID, update)
 	if err != nil {
 		writeFailure(w, r, err, "Unable to update venue")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, venue)
+}
+
+// captureVenueLocation sets a venue's coordinates from a position captured on
+// the caller's device while they stand in the room, so no one has to look up
+// and type latitude and longitude.
+func (h *Handler) captureVenueLocation(w http.ResponseWriter, r *http.Request) {
+	principal, ok := requirePrincipal(w, r)
+	if !ok {
+		return
+	}
+	venueID := chi.URLParam(r, "id")
+	if _, err := db.ParseUUID(venueID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Venue ID is invalid", nil)
+		return
+	}
+	var location catalogue.VenueLocation
+	if err := httpx.DecodeJSON(w, r, &location); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if err := httpx.ValidateStruct(location); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Captured location fields are invalid", nil)
+		return
+	}
+	venue, err := h.service.CaptureVenueLocation(r.Context(), principal.Identity.InstitutionID,
+		principal.Identity.UserID, venueID, location)
+	if err != nil {
+		writeFailure(w, r, err, "Unable to capture venue location")
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, venue)
@@ -707,6 +739,9 @@ func writeFailure(w http.ResponseWriter, r *http.Request, err error, message str
 	switch {
 	case errors.Is(err, catalogue.ErrInvalidRequest):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Resource fields are invalid", nil)
+	case errors.Is(err, catalogue.ErrInaccurateLocation):
+		httpx.WriteError(w, http.StatusBadRequest, "location_too_inaccurate",
+			"The captured position is too imprecise to use; wait for a better fix or move near a window and try again", nil)
 	case errors.Is(err, catalogue.ErrForbidden):
 		httpx.WriteError(w, http.StatusForbidden, "access_denied", "You cannot manage this resource", nil)
 	case errors.Is(err, catalogue.ErrResourceInUse):

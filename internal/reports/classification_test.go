@@ -12,11 +12,11 @@ func TestClassificationMatrix(t *testing.T) {
 		status string
 	}{
 		{"web and scan", Record{OnRoster: true, HasWebCheckin: true, HasFingerprint: true, ScannerAvailable: true}, Verified, "present"},
-		{"web only with scanner", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true}, SuspectedProxy, "present"},
+		{"web only with scanner", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true}, WebOnlyUnverified, "present"},
 		{"scan only", Record{OnRoster: true, HasFingerprint: true, ScannerAvailable: true}, PresentNoWebLog, "present"},
 		{"absent", Record{OnRoster: true, ScannerAvailable: true}, Absent, "absent"},
 		{"web only without scanner", Record{OnRoster: true, HasWebCheckin: true}, Verified, "present"},
-		{"late web check-in", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true, WebStatus: "late"}, SuspectedProxy, "late"},
+		{"late web check-in", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true, WebStatus: "late"}, WebOnlyUnverified, "late"},
 		{"unrostered still reported", Record{HasFingerprint: true, ScannerAvailable: true}, PresentNoWebLog, "present"},
 		{"present override wins", Record{HasFingerprint: true, ScannerAvailable: true, OverrideStatus: "present"}, Verified, "present"},
 		{"absent override wins", Record{HasWebCheckin: true, ScannerAvailable: true, OverrideStatus: "absent"}, Absent, "absent"},
@@ -34,6 +34,18 @@ func TestClassificationMatrix(t *testing.T) {
 			OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
 			ScannerCoverage: ScannerCoverage{State: CoverageNone},
 		}, WebOnlyUnverified, "present"},
+		{"weak fix is unverified, not a suspected proxy", Record{
+			OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
+			LocationUnverified: true,
+		}, WebOnlyUnverified, "present"},
+		{"a scan verifies a weak fix outright", Record{
+			OnRoster: true, HasWebCheckin: true, HasFingerprint: true,
+			ScannerAvailable: true, LocationUnverified: true,
+		}, Verified, "present"},
+		{"an override beats a weak fix", Record{
+			OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
+			LocationUnverified: true, OverrideStatus: "present",
+		}, Verified, "present"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,5 +155,53 @@ func TestAttendancePercentageAndThreshold(t *testing.T) {
 	}
 	if !BelowThreshold([]AttendanceStatus{StatusAbsent, StatusAbsent}, true, 75) {
 		t.Fatal("zero attendance should be below threshold")
+	}
+}
+
+// A weak phone fix is reported with its own reason so the lecturer can tell it
+// apart from a scanner outage.
+func TestClassifyReportsLocationUnverifiedReason(t *testing.T) {
+	t.Parallel()
+	outcome := Classify(Record{
+		OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
+		LocationUnverified: true,
+		ScannerCoverage:    ScannerCoverage{State: CoverageFull},
+	})
+	if outcome.Classification != WebOnlyUnverified || outcome.Reason != "location_unverified" {
+		t.Fatalf("Classify() = %+v, want web_only_unverified/location_unverified", outcome)
+	}
+	outcome = Classify(Record{
+		OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
+		LocationUnverified: true,
+		ScannerCoverage:    ScannerCoverage{State: CoverageNone},
+	})
+	if outcome.Reason != "scanner_unavailable" {
+		t.Fatalf("a scanner outage should keep its own reason, got %q", outcome.Reason)
+	}
+}
+
+// A student who checked in on the web while a working scanner stood in the
+// room is reported as unverified with its own reason, never accused of a
+// proxy: the server cannot tell a stand-in from a finger the sensor would not
+// read, and the check-in still passed a live code and the device binding.
+func TestClassifyReportsMissingFingerprintWithoutAccusation(t *testing.T) {
+	t.Parallel()
+	outcome := Classify(Record{
+		OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
+		ScannerCoverage: ScannerCoverage{State: CoverageFull},
+	})
+	if outcome.Classification != WebOnlyUnverified || outcome.Reason != "no_fingerprint" {
+		t.Fatalf("Classify() = %+v, want web_only_unverified/no_fingerprint", outcome)
+	}
+	if outcome.Status != "present" {
+		t.Fatalf("an unverified row should still count as present, got %q", outcome.Status)
+	}
+	// A fingerprint, or an override, still outranks the flag.
+	verified := Classify(Record{
+		OnRoster: true, HasWebCheckin: true, HasFingerprint: true, ScannerAvailable: true,
+		ScannerCoverage: ScannerCoverage{State: CoverageFull},
+	})
+	if verified.Classification != Verified || verified.Reason != "" {
+		t.Fatalf("a scanned check-in should be verified, got %+v", verified)
 	}
 }

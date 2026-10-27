@@ -31,15 +31,19 @@ func (e *OpenVenueError) Error() string {
 }
 
 type Session struct {
-	ID            string        `json:"id"`
-	InstitutionID string        `json:"-"`
-	OfferingID    string        `json:"offering_id"`
-	VenueID       string        `json:"venue_id"`
-	StartedAt     time.Time     `json:"started_at"`
-	EndedAt       *time.Time    `json:"ended_at"`
-	Latitude      float64       `json:"latitude"`
-	Longitude     float64       `json:"longitude"`
-	RadiusMeters  float64       `json:"radius_meters"`
+	ID            string     `json:"id"`
+	InstitutionID string     `json:"-"`
+	OfferingID    string     `json:"offering_id"`
+	VenueID       string     `json:"venue_id"`
+	StartedAt     time.Time  `json:"started_at"`
+	EndedAt       *time.Time `json:"ended_at"`
+	// Latitude, Longitude, and RadiusMeters are nil when the session has no
+	// geofence, because neither the lecturer's device nor the venue supplied
+	// a centre. Check-ins then carry no distance and are never refused on it.
+	Latitude     *float64 `json:"latitude"`
+	Longitude    *float64 `json:"longitude"`
+	RadiusMeters *float64 `json:"radius_meters"`
+
 	RotatingCode  bool          `json:"rotating_code"`
 	StaticCode    string        `json:"-"`
 	CodeExpiresAt *time.Time    `json:"-"`
@@ -53,11 +57,19 @@ type StartInput struct {
 	VenueID       string
 	TimetableID   string
 	StartedBy     string
-	Latitude      float64
-	Longitude     float64
-	RadiusMeters  float64
-	RotatingCode  bool
-	LateAfter     time.Duration
+	// Latitude, Longitude, and RadiusMeters are nil when the session opens
+	// without a geofence.
+	Latitude     *float64
+	Longitude    *float64
+	RadiusMeters *float64
+	RotatingCode bool
+	LateAfter    time.Duration
+	// LocationSource and CalibrateVenue carry the decision made by
+	// ResolveStartLocation: where the centre came from, and whether it is good
+	// enough to write back to the venue in the same transaction.
+	LocationSource LocationSource
+	CalibrateVenue bool
+	AccuracyMeters float64
 }
 
 type SessionStore interface {
@@ -88,6 +100,27 @@ type FixedCodeStore interface {
 	ConvertToFixedCode(context.Context, string, string, string, string, time.Time) (Session, error)
 }
 
+// LocationStore recentres an open session on a fix from the lecturer's device
+// and calibrates the venue from the same fix, so the next class in that room
+// starts from a good anchor.
+type LocationStore interface {
+	RecentreSession(context.Context, string, string, string, Centre, DeviceFix, time.Time) error
+}
+
+// LocationResult is the answer to a mid-session fix: what the server did with
+// it, and the geofence that is in force afterwards.
+type LocationResult struct {
+	SessionID string          `json:"session_id"`
+	Outcome   LocationOutcome `json:"outcome"`
+	// Latitude, Longitude, and RadiusMeters are the geofence in force after
+	// the call, and are nil when the session still has no centre: the venue
+	// has never been calibrated and this fix was too vague to be its first.
+	Latitude     *float64 `json:"latitude"`
+	Longitude    *float64 `json:"longitude"`
+	RadiusMeters *float64 `json:"radius_meters"`
+	MovedMeters  float64  `json:"moved_meters"`
+}
+
 type ScannerStatusStore interface {
 	MarkScannerUnavailable(context.Context, string, string, string, string, time.Time) error
 }
@@ -96,6 +129,9 @@ type VenueSettings struct {
 	Latitude     float64
 	Longitude    float64
 	RadiusMeters float64
+	// Present is false for a venue that has never been given coordinates. A
+	// venue is a named room first; its position is optional metadata.
+	Present bool
 }
 
 type Clock interface {
@@ -116,6 +152,9 @@ type Started struct {
 	Session          Session `json:"session"`
 	Code             string  `json:"code"`
 	SecondsRemaining int     `json:"seconds_remaining"`
+	// LocationSource tells the lecturer's app whether its own fix was used or
+	// the venue's stored location was fallen back on.
+	LocationSource LocationSource `json:"location_source"`
 }
 
 func NewService(store SessionStore, clock Clock, codeSecret []byte, codeWindow, staticTTL time.Duration) (*Service, error) {
@@ -148,13 +187,11 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Started, error) 
 	if input.InstitutionID == "" || input.OfferingID == "" || input.VenueID == "" || input.StartedBy == "" {
 		return Started{}, errors.New("institution, offering, venue, and actor are required")
 	}
-	if math.IsNaN(input.Latitude) || math.IsInf(input.Latitude, 0) ||
-		math.IsNaN(input.Longitude) || math.IsInf(input.Longitude, 0) ||
-		input.Latitude < -90 || input.Latitude > 90 || input.Longitude < -180 || input.Longitude > 180 ||
-		math.IsNaN(input.RadiusMeters) || math.IsInf(input.RadiusMeters, 0) ||
-		input.RadiusMeters <= 0 || input.RadiusMeters != math.Trunc(input.RadiusMeters) ||
-		input.RadiusMeters > math.MaxInt32 || input.LateAfter < 0 ||
-		input.LateAfter%time.Minute != 0 || input.LateAfter/time.Minute > math.MaxInt32 {
+	// A session may open with no geofence at all; coordinates are validated
+	// only when they are actually supplied.
+	if !validOptionalCentre(input.Latitude, input.Longitude, input.RadiusMeters) ||
+		input.LateAfter < 0 || input.LateAfter%time.Minute != 0 ||
+		input.LateAfter/time.Minute > math.MaxInt32 {
 		return Started{}, ErrInvalidSession
 	}
 	now := s.clock.Now().UTC()
@@ -174,7 +211,17 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Started, error) 
 		return Started{}, err
 	}
 	session.LateAfterMin = int64(session.LateAfter / time.Minute)
-	result := Started{Session: session}
+	// A caller that did not resolve a source still gets an honest one: a
+	// session that ended up with no centre reports none rather than claiming
+	// the venue supplied one.
+	source := input.LocationSource
+	if source == "" {
+		source = LocationFromVenue
+		if sessionCentre(session) == nil {
+			source = LocationNone
+		}
+	}
+	result := Started{Session: session, LocationSource: source}
 	if session.RotatingCode {
 		result.Code, result.SecondsRemaining, err = CurrentCode(s.codeSecret, session.ID, now, s.codeWindow)
 		if err != nil {
@@ -217,6 +264,79 @@ func (s *Service) Code(ctx context.Context, institutionID, sessionID string) (St
 		result.SecondsRemaining = int(session.CodeExpiresAt.Sub(now).Seconds())
 	}
 	return result, nil
+}
+
+// UpdateLocation applies a mid-session fix from the lecturer's device. A fix
+// that agrees with the current centre, or that is too vague or too far to
+// trust, leaves the geofence untouched; only a refinement, or the first centre
+// for a venue that has none, is written.
+//
+// A session with no centre takes its radius from RadiusForNewCentre, so a
+// venue calibrated mid-class gets the same radius rule as one calibrated from
+// the venue screen.
+func (s *Service) UpdateLocation(
+	ctx context.Context,
+	institutionID, sessionID, actorUserID string,
+	fix DeviceFix,
+) (LocationResult, error) {
+	if institutionID == "" || sessionID == "" || actorUserID == "" {
+		return LocationResult{}, ErrInvalidLocation
+	}
+	session, found, err := s.store.Get(ctx, institutionID, sessionID)
+	if err != nil {
+		return LocationResult{}, fmt.Errorf("load session for location update: %w", err)
+	}
+	if !found {
+		return LocationResult{}, ErrSessionNotFound
+	}
+	if session.EndedAt != nil {
+		return LocationResult{}, ErrSessionEnded
+	}
+	current := sessionCentre(session)
+	outcome, moved, err := ClassifyLocationUpdate(current, fix)
+	if err != nil {
+		return LocationResult{}, err
+	}
+	result := LocationResult{SessionID: session.ID, Outcome: outcome, MovedMeters: moved}
+	if current != nil {
+		result.Latitude, result.Longitude = &current.Latitude, &current.Longitude
+		result.RadiusMeters = &current.RadiusMeters
+	}
+	if outcome != LocationRefined && outcome != LocationEstablished {
+		return result, nil
+	}
+	store, ok := s.store.(LocationStore)
+	if !ok {
+		return LocationResult{}, errors.New("session location updates are not supported by this store")
+	}
+	// A refinement keeps the radius the session is already running with; a
+	// first centre has none to keep, so one is derived from the fix.
+	centre := Centre{
+		Latitude: fix.Latitude, Longitude: fix.Longitude,
+		RadiusMeters: RadiusForNewCentre(fix.AccuracyMeters),
+	}
+	if current != nil {
+		centre.RadiusMeters = current.RadiusMeters
+	}
+	if err := store.RecentreSession(ctx, institutionID, session.ID, actorUserID,
+		centre, fix, s.clock.Now().UTC()); err != nil {
+		return LocationResult{}, fmt.Errorf("recentre session: %w", err)
+	}
+	result.Latitude, result.Longitude = &centre.Latitude, &centre.Longitude
+	result.RadiusMeters = &centre.RadiusMeters
+	return result, nil
+}
+
+// sessionCentre reads a session's geofence, which is absent when the venue had
+// no coordinates to snapshot at start.
+func sessionCentre(session Session) *Centre {
+	if session.Latitude == nil || session.Longitude == nil || session.RadiusMeters == nil {
+		return nil
+	}
+	return &Centre{
+		Latitude: *session.Latitude, Longitude: *session.Longitude,
+		RadiusMeters: *session.RadiusMeters,
+	}
 }
 
 func (s *Service) ConvertToFixedCode(ctx context.Context, institutionID, sessionID, actorUserID string) (Started, error) {

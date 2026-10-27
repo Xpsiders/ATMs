@@ -32,9 +32,10 @@ resolved.
   offering lecturers and coordinator. Department/institution administrator
   scope authorization will be added with the RBAC-backed organization APIs;
   trusting a caller-provided role would be unsafe.
-- Starting a session copies the venue coordinates and radius. A lecturer may
-  explicitly override individual values at start, and the snapshot remains
-  fixed for that session.
+- Starting a session snapshots the venue's coordinates and radius, or the
+  lecturer's own fix when it is good enough, and the snapshot stays fixed for
+  that session apart from `POST /sessions/{id}/location`. A venue with no
+  coordinates snapshots none; see "Venue location and check-in geofence".
 
 ## Device API
 
@@ -149,3 +150,87 @@ resolved.
 - Updating a resource's owning parent requires authorization for both its
   current resource scope and the proposed destination scope; otherwise a
   caller could move an owned course or offering into another department.
+
+## Venue location and check-in geofence
+
+- **Location is evidence, never a gate.** Nothing refuses a check-in on
+  position any more: `outside_radius` is gone. Students were being denied
+  attendance for a hardware limit they cannot fix, and a cheap or indoor-bound
+  handset is not evidence of a proxy. A fix is recorded, compared, and where it
+  cannot be explained, flagged for the lecturer.
+- **Device binding replaces the geofence as the anti-proxy control.** One
+  device may record at most one student per session; a second student from the
+  same device is refused with `device_already_used` (409). `device_hash` is
+  therefore required on `POST /checkins`, where it used to be optional, because
+  an absent one can no longer be treated as an opt-out.
+- **A venue's coordinates are optional and come from the lecturer's device.** A
+  venue is a named room first; its position is metadata it may not have. An
+  administrator never visits the room, so the only reliable source is the
+  lecturer standing in it. `POST /sessions` accepts `latitude`, `longitude`,
+  and `accuracy_meters` from the browser Geolocation API: a fix of 100 m or
+  better centres the session and is written back to the venue, so the next
+  class there starts from a good anchor. The response reports
+  `location_source` as `device`, `venue`, or `none`. Starting a class never
+  depends on it — permission denied or a timeout simply opens the session with
+  whatever the venue has, possibly nothing.
+- **A fix vaguer than 100 m is discarded rather than used.** Centring a class
+  on a 500-metre reading would strand the students inside the room, so the
+  session falls back to the venue's stored centre.
+- **The geofence does not follow the lecturer.** `POST /sessions/{id}/location`
+  takes a mid-session fix (the app posts one about every five minutes). A fix
+  inside the session's own radius refines the centre and recalibrates the
+  venue; a fix beyond it is reported as `rejected_distance` and changes
+  nothing. A reading outside the radius is either a lecturer who stepped out or
+  a venue whose stored centre is wrong, and nothing in the reading tells the
+  two apart — moving the centre on that guess would push every student still in
+  the room outside it and pull whoever is near the lecturer in.
+- **A venue with no centre is the one case a fix may establish one.** There is
+  no circle to push anyone out of and nothing to contradict, so the first
+  trusted fix sets it (`established`) and the room is calibrated for every
+  class that follows. Without this, a venue whose lecturer denied location
+  permission at start could never acquire a centre at all, which would defeat
+  the point of capturing it on their device.
+- `POST /venues/{id}/location` remains for an explicit "recalibrate this room"
+  action and is audited as `venue.location_captured`, the same action the
+  session paths write, so a venue's location history is one stream. It is open
+  to administrators over the venue's department **and** to a lecturer who
+  teaches at the venue, since they are the only person who is ever in it.
+- `POST /venues` needs only a name. `radius_meters` defaults to 75 metres when
+  a position is supplied and both routes cap it at 2000 metres, so one venue
+  cannot cover a campus. A venue with no position stores NULL for all three
+  columns rather than a zero radius, which the surviving
+  `CHECK (radius_meters > 0)` would reject and which would also read as a real
+  coordinate off the coast of Ghana.
+- A radius is kept once set: a device fix says where a room is, not how big it
+  is. Only a venue with no radius takes one derived from the captured accuracy.
+- **`location_unverified` means the phone's own error cannot explain the gap.**
+  The allowance is the reported accuracy, capped at 250 metres past the radius.
+  Inside it, the fix is simply accepted and unflagged; beyond it, the check-in
+  is still recorded but reported as `web_only_unverified` with reason
+  `location_unverified` for the lecturer to confirm.
+- Location trust is derived, not stored. The report recomputes it from the
+  check-in's recorded `distance_meters` and `accuracy_meters` against the
+  session's `radius_meters`, applying the same 250-metre cap as the service so
+  the report and the check-in response cannot disagree. The cap is written in
+  both Go and SQL; each carries a comment pointing at the other.
+- A student whose fix is flagged still has two routes to a clean record: the
+  room's fingerprint scanner, which verifies them outright because a biometric
+  at the venue outranks any GPS reading, and a lecturer override after the
+  session closes, which takes precedence over every other signal.
+
+## Attendance is never classified as a proxy
+
+- There is no `suspected_proxy` classification. A web check-in with no
+  fingerprint, taken while a working scanner stood in the room, is reported as
+  `web_only_unverified` with reason `no_fingerprint`. Nothing the server
+  observes separates a stand-in from a queue at the sensor, a finger the sensor
+  will not read, or a student who did not know to scan, so the report states
+  what is missing and leaves the judgement to the lecturer, who can confirm or
+  clear it with an override.
+- The check-in behind such a row is not unguarded: it passed a rotating code
+  that is valid for 30 seconds by default (`CHECKIN_CODE_WINDOW_SECONDS`) and
+  the one-student-per-device binding that stops a single handset signing in a
+  row of friends. The window is deliberately short, because forwarding the code
+  to an absent friend is the remaining gap and its lifetime is what bounds it.
+- The fingerprint scanner remains the only positive proof of presence, and an
+  override still outranks every other signal.

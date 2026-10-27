@@ -70,10 +70,16 @@ func (s *PostgresStore) Create(ctx context.Context, input sessions.StartInput, s
 		staticValue = pgtype.Text{String: staticCode, Valid: true}
 		expiryValue = pgtype.Timestamptz{Time: expiresAt.UTC(), Valid: true}
 	}
-	row, err := s.queries.CreateLectureSession(ctx, dbgen.CreateLectureSessionParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return sessions.Session{}, fmt.Errorf("begin session start: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	queries := s.queries.WithTx(tx)
+	row, err := queries.CreateLectureSession(ctx, dbgen.CreateLectureSessionParams{
 		InstitutionID: institutionID, OfferingID: offeringID, VenueID: venueID, TimetableID: timetableID,
 		StartedByUserID: startedBy, StartedAt: pgtype.Timestamptz{Time: startedAt.UTC(), Valid: true},
-		Latitude: input.Latitude, Longitude: input.Longitude, RadiusMeters: int32(input.RadiusMeters),
+		Latitude: coordinateParam(input.Latitude), Longitude: coordinateParam(input.Longitude), RadiusMeters: radiusParam(input.RadiusMeters),
 		RotatingCode: input.RotatingCode, StaticCode: staticValue, CodeExpiresAt: expiryValue,
 		LateAfterMin: int32(input.LateAfter / time.Minute),
 	})
@@ -98,10 +104,25 @@ func (s *PostgresStore) Create(ctx context.Context, input sessions.StartInput, s
 	if err != nil {
 		return sessions.Session{}, fmt.Errorf("insert lecture session: %w", err)
 	}
+	// The fix that centred this session is good enough to be the room's
+	// anchor, so it is written to the venue in the same transaction: either
+	// the class starts and the room is calibrated, or neither happens.
+	if input.CalibrateVenue && input.Latitude != nil && input.Longitude != nil {
+		if err := calibrateVenue(ctx, tx, institutionID, venueID, startedBy,
+			sessions.Centre{
+				Latitude: *input.Latitude, Longitude: *input.Longitude,
+				RadiusMeters: radiusOrDefault(input.RadiusMeters, input.AccuracyMeters),
+			}, input.AccuracyMeters, "session_start", row.ID.String(), startedAt); err != nil {
+			return sessions.Session{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return sessions.Session{}, fmt.Errorf("commit session start: %w", err)
+	}
 	return sessions.Session{
 		ID: row.ID.String(), InstitutionID: row.InstitutionID.String(), OfferingID: row.OfferingID.String(),
 		VenueID: row.VenueID.String(), StartedAt: row.StartedAt.Time.UTC(), EndedAt: db.TimestampPointer(row.EndedAt),
-		Latitude: row.Latitude, Longitude: row.Longitude, RadiusMeters: float64(row.RadiusMeters),
+		Latitude: optCoordinate(row.Latitude), Longitude: optCoordinate(row.Longitude), RadiusMeters: optRadius(row.RadiusMeters),
 		RotatingCode: row.RotatingCode, StaticCode: row.StaticCode.String,
 		CodeExpiresAt: db.TimestampPointer(row.CodeExpiresAt), LateAfter: time.Duration(row.LateAfterMin) * time.Minute,
 		LateAfterMin: int64(row.LateAfterMin),
@@ -161,7 +182,7 @@ func (s *PostgresStore) End(ctx context.Context, institutionIDText, sessionIDTex
 	return sessions.Session{
 		ID: row.ID.String(), InstitutionID: row.InstitutionID.String(), OfferingID: row.OfferingID.String(),
 		VenueID: row.VenueID.String(), StartedAt: row.StartedAt.Time.UTC(), EndedAt: db.TimestampPointer(row.EndedAt),
-		Latitude: row.Latitude, Longitude: row.Longitude, RadiusMeters: float64(row.RadiusMeters),
+		Latitude: optCoordinate(row.Latitude), Longitude: optCoordinate(row.Longitude), RadiusMeters: optRadius(row.RadiusMeters),
 		RotatingCode: row.RotatingCode, StaticCode: row.StaticCode.String,
 		CodeExpiresAt: db.TimestampPointer(row.CodeExpiresAt), LateAfter: time.Duration(row.LateAfterMin) * time.Minute,
 		LateAfterMin: int64(row.LateAfterMin),
@@ -221,11 +242,113 @@ func (s *PostgresStore) ConvertToFixedCode(ctx context.Context, institutionIDTex
 	return sessions.Session{
 		ID: row.ID.String(), InstitutionID: row.InstitutionID.String(), OfferingID: row.OfferingID.String(),
 		VenueID: row.VenueID.String(), StartedAt: row.StartedAt.Time.UTC(), EndedAt: db.TimestampPointer(row.EndedAt),
-		Latitude: row.Latitude, Longitude: row.Longitude, RadiusMeters: float64(row.RadiusMeters),
+		Latitude: optCoordinate(row.Latitude), Longitude: optCoordinate(row.Longitude), RadiusMeters: optRadius(row.RadiusMeters),
 		RotatingCode: row.RotatingCode, StaticCode: row.StaticCode.String,
 		CodeExpiresAt: db.TimestampPointer(row.CodeExpiresAt), LateAfter: time.Duration(row.LateAfterMin) * time.Minute,
 		LateAfterMin: int64(row.LateAfterMin),
 	}, nil
+}
+
+// RecentreSession writes a mid-session fix from the lecturer's device over the
+// session's geofence and the venue's stored centre, in one transaction.
+//
+// The venue is calibrated from the same fix because the lecturer standing in
+// the room is the best evidence the system will ever get about where that room
+// is; leaving the venue stale would make the next class repeat the correction.
+func (s *PostgresStore) RecentreSession(
+	ctx context.Context,
+	institutionIDText, sessionIDText, actorUserIDText string,
+	centre sessions.Centre,
+	fix sessions.DeviceFix,
+	changedAt time.Time,
+) error {
+	institutionID, err := db.ParseUUID(institutionIDText)
+	if err != nil {
+		return err
+	}
+	sessionID, err := db.ParseUUID(sessionIDText)
+	if err != nil {
+		return err
+	}
+	actorID, err := db.ParseUUID(actorUserIDText)
+	if err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin session recentre: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	// ended_at IS NULL is re-checked here rather than trusted from the earlier
+	// read: a class can end between the two, and a closed session's geofence
+	// is part of its attendance record.
+	var venueID pgtype.UUID
+	err = tx.QueryRow(ctx, `UPDATE lecture_sessions
+		SET latitude=$3, longitude=$4, radius_meters=$5
+		WHERE institution_id=$1 AND id=$2 AND ended_at IS NULL
+		RETURNING venue_id`,
+		institutionID, sessionID, centre.Latitude, centre.Longitude,
+		int32(centre.RadiusMeters)).Scan(&venueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sessions.ErrSessionEnded
+	}
+	if err != nil {
+		return fmt.Errorf("recentre lecture session: %w", err)
+	}
+	if err := calibrateVenue(ctx, tx, institutionID, venueID, actorID, centre,
+		fix.AccuracyMeters, "session_update", sessionID.String(), changedAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit session recentre: %w", err)
+	}
+	return nil
+}
+
+// calibrateVenue writes a captured centre onto the venue and audits it. An
+// existing radius is kept: it was set for that room, and a device fix says
+// nothing about how big the room is. Only a venue that has no radius takes the
+// one derived from this fix.
+func calibrateVenue(
+	ctx context.Context,
+	tx pgx.Tx,
+	institutionID, venueID, actorID pgtype.UUID,
+	centre sessions.Centre,
+	accuracyMeters float64,
+	source, sessionID string,
+	changedAt time.Time,
+) error {
+	if _, err := tx.Exec(ctx, `UPDATE venues
+		SET latitude=$3, longitude=$4, radius_meters=coalesce(radius_meters,$5)
+		WHERE institution_id=$1 AND id=$2`,
+		institutionID, venueID, centre.Latitude, centre.Longitude,
+		int32(centre.RadiusMeters)); err != nil {
+		return fmt.Errorf("calibrate venue from device fix: %w", err)
+	}
+	details, err := json.Marshal(map[string]any{
+		"latitude": centre.Latitude, "longitude": centre.Longitude,
+		"accuracy_meters": accuracyMeters, "source": source, "session_id": sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("encode venue calibration audit details: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details,created_at)
+		VALUES($1,$2,'venue.location_captured','venue',$3,$4::jsonb,$5)`,
+		institutionID, actorID, venueID.String(), details,
+		pgtype.Timestamptz{Time: changedAt.UTC(), Valid: true}); err != nil {
+		return fmt.Errorf("audit venue calibration: %w", err)
+	}
+	return nil
+}
+
+// radiusOrDefault picks the radius to store on a venue being calibrated: the
+// one the session is running with when it has it, otherwise the rule for a
+// fresh centre.
+func radiusOrDefault(radiusMeters *float64, accuracyMeters float64) float64 {
+	if radiusMeters != nil && *radiusMeters > 0 {
+		return *radiusMeters
+	}
+	return sessions.RadiusForNewCentre(accuracyMeters)
 }
 
 func (s *PostgresStore) MarkScannerUnavailable(ctx context.Context, institutionIDText, sessionIDText, actorUserIDText, note string, changedAt time.Time) error {
@@ -289,7 +412,15 @@ func (s *PostgresStore) VenueSettings(ctx context.Context, institutionIDText, ve
 	if err != nil {
 		return sessions.VenueSettings{}, fmt.Errorf("select venue settings: %w", err)
 	}
-	return sessions.VenueSettings{Latitude: row.Latitude, Longitude: row.Longitude, RadiusMeters: float64(row.RadiusMeters)}, nil
+	settings := sessions.VenueSettings{
+		Present: row.Latitude.Valid && row.Longitude.Valid && row.RadiusMeters.Valid,
+	}
+	if settings.Present {
+		settings.Latitude = row.Latitude.Float64
+		settings.Longitude = row.Longitude.Float64
+		settings.RadiusMeters = float64(row.RadiusMeters.Int32)
+	}
+	return settings, nil
 }
 
 func (s *PostgresStore) CanManageOffering(ctx context.Context, institutionIDText, offeringIDText, userIDText string) (bool, error) {
@@ -372,9 +503,43 @@ func sessionFromGetRow(row dbgen.GetLectureSessionRow) sessions.Session {
 	return sessions.Session{
 		ID: row.ID.String(), InstitutionID: row.InstitutionID.String(), OfferingID: row.OfferingID.String(),
 		VenueID: row.VenueID.String(), StartedAt: row.StartedAt.Time.UTC(), EndedAt: db.TimestampPointer(row.EndedAt),
-		Latitude: row.Latitude, Longitude: row.Longitude, RadiusMeters: float64(row.RadiusMeters),
+		Latitude: optCoordinate(row.Latitude), Longitude: optCoordinate(row.Longitude), RadiusMeters: optRadius(row.RadiusMeters),
 		RotatingCode: row.RotatingCode, StaticCode: row.StaticCode.String,
 		CodeExpiresAt: db.TimestampPointer(row.CodeExpiresAt), LateAfter: time.Duration(row.LateAfterMin) * time.Minute,
 		LateAfterMin: int64(row.LateAfterMin),
 	}
+}
+
+// A session's geofence columns are nullable: a venue with no stored
+// coordinates starts a session with no centre. The three are always written
+// and read together, so each mapper guards on its own column's validity.
+
+func optCoordinate(value pgtype.Float8) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	coordinate := value.Float64
+	return &coordinate
+}
+
+func optRadius(value pgtype.Int4) *float64 {
+	if !value.Valid {
+		return nil
+	}
+	radius := float64(value.Int32)
+	return &radius
+}
+
+func coordinateParam(value *float64) pgtype.Float8 {
+	if value == nil {
+		return pgtype.Float8{}
+	}
+	return pgtype.Float8{Float64: *value, Valid: true}
+}
+
+func radiusParam(value *float64) pgtype.Int4 {
+	if value == nil {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: int32(*value), Valid: true}
 }

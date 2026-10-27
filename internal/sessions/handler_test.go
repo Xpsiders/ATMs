@@ -22,9 +22,15 @@ const testSessionID = "2f4e4ed0-490c-4cba-9343-62b0744d6ba7"
 type handlerSessionStore struct {
 	session     sessions.Session
 	liveClasses []sessions.LiveClass
+	// started keeps the input the handler resolved, so a test can assert what
+	// the handler decided about the lecturer's fix and not only what it
+	// returned.
+	started   sessions.StartInput
+	recentred []sessions.Centre
 }
 
 func (s *handlerSessionStore) Create(_ context.Context, input sessions.StartInput, startedAt time.Time, staticCode string, expiresAt *time.Time) (sessions.Session, error) {
+	s.started = input
 	s.session = sessions.Session{
 		ID: testSessionID, InstitutionID: input.InstitutionID, OfferingID: input.OfferingID,
 		VenueID: input.VenueID, StartedAt: startedAt, Latitude: input.Latitude,
@@ -51,6 +57,18 @@ func (s *handlerSessionStore) ListLiveClasses(context.Context, string, string, s
 	return s.liveClasses, nil
 }
 
+func (s *handlerSessionStore) RecentreSession(_ context.Context, _, sessionID, _ string,
+	centre sessions.Centre, _ sessions.DeviceFix, _ time.Time,
+) error {
+	if s.session.ID != sessionID {
+		return sessions.ErrSessionNotFound
+	}
+	latitude, longitude, radius := centre.Latitude, centre.Longitude, centre.RadiusMeters
+	s.session.Latitude, s.session.Longitude, s.session.RadiusMeters = &latitude, &longitude, &radius
+	s.recentred = append(s.recentred, centre)
+	return nil
+}
+
 type handlerAccessStore struct {
 	allowed bool
 	venue   sessions.VenueSettings
@@ -72,7 +90,7 @@ func TestSessionStartHandlerResponseAndVenueDefaults(t *testing.T) {
 	t.Parallel()
 	store := &handlerSessionStore{}
 	access := &handlerAccessStore{allowed: true, venue: sessions.VenueSettings{
-		Latitude: 6.5, Longitude: 3.3, RadiusMeters: 75,
+		Latitude: 6.5, Longitude: 3.3, RadiusMeters: 75, Present: true,
 	}}
 	service, err := sessions.NewService(store, testutil.NewFakeClock(time.Unix(120, 0)),
 		[]byte("0123456789abcdef0123456789abcdef"), time.Minute, 5*time.Minute)
@@ -101,8 +119,10 @@ func TestSessionStartHandlerResponseAndVenueDefaults(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Session.ID != testSessionID || result.Session.Latitude != 6.5 ||
-		result.Session.Longitude != 3.3 || result.Session.RadiusMeters != 75 ||
+	if result.Session.ID != testSessionID ||
+		result.Session.Latitude == nil || *result.Session.Latitude != 6.5 ||
+		result.Session.Longitude == nil || *result.Session.Longitude != 3.3 ||
+		result.Session.RadiusMeters == nil || *result.Session.RadiusMeters != 75 ||
 		len(result.Code) != 6 || result.SecondsRemaining <= 0 {
 		t.Fatalf("unexpected start response: %+v", result)
 	}
@@ -233,5 +253,180 @@ func TestLiveClassesHandlerRejectsNonStudentIdentity(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"student_account_required"`) {
 		t.Fatalf("non-student live classes request = %d %s", response.Code, response.Body.String())
+	}
+}
+
+// locationTestRouter wires a session handler over the given venue settings.
+func locationTestRouter(t *testing.T, store *handlerSessionStore, venue sessions.VenueSettings) chi.Router {
+	t.Helper()
+	service, err := sessions.NewService(store, testutil.NewFakeClock(time.Unix(120, 0)),
+		[]byte("0123456789abcdef0123456789abcdef"), time.Minute, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := sessionhttp.NewHandler(service, &handlerAccessStore{allowed: true, venue: venue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := chi.NewRouter()
+	handler.RegisterRoutes(router)
+	return router
+}
+
+func locationTestPrincipal() auth.Principal {
+	return auth.Principal{Identity: auth.Identity{
+		InstitutionID: "2f4e4ed0-490c-4cba-9343-62b0744d6ba7",
+		UserID:        "8a3e2ab7-5f95-4d80-a64a-fbd1bf17d28b",
+	}}
+}
+
+func postJSON(t *testing.T, router chi.Router, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request = request.WithContext(auth.WithPrincipal(request.Context(), locationTestPrincipal()))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
+}
+
+func TestSessionStartHandlerCalibratesVenueFromLecturerFix(t *testing.T) {
+	t.Parallel()
+	store := &handlerSessionStore{}
+	// A venue whose stored centre is wrong by hundreds of metres, which is
+	// what typed-in coordinates look like in practice.
+	router := locationTestRouter(t, store, sessions.VenueSettings{
+		Latitude: 6.6, Longitude: 3.4, RadiusMeters: 90, Present: true,
+	})
+	response := postJSON(t, router, "/sessions", `{"offering_id":"4c39d74e-7b7c-4cb0-8bd5-c8274905e3ce",
+		"venue_id":"48c5efb3-9651-478d-9d70-bb5be469f62f",
+		"latitude":6.5244,"longitude":3.3792,"accuracy_meters":12.5}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("start = %d %s", response.Code, response.Body.String())
+	}
+	var result sessions.Started
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.LocationSource != sessions.LocationFromDevice {
+		t.Fatalf("location_source = %q, want device", result.LocationSource)
+	}
+	if !store.started.CalibrateVenue {
+		t.Fatal("a trusted lecturer fix must calibrate the venue, or the next class repeats the correction")
+	}
+	if store.started.Latitude == nil || *store.started.Latitude != 6.5244 {
+		t.Fatalf("session centre = %+v, want the lecturer's fix", store.started.Latitude)
+	}
+	if store.started.RadiusMeters == nil || *store.started.RadiusMeters != 90 {
+		t.Fatalf("radius = %+v, want the venue's own 90 m", store.started.RadiusMeters)
+	}
+}
+
+func TestSessionStartHandlerSucceedsWithLocationPermissionDenied(t *testing.T) {
+	t.Parallel()
+	store := &handlerSessionStore{}
+	// The browser refused to supply a position and the venue has never been
+	// calibrated. Attendance must still work: location is evidence, not a gate.
+	router := locationTestRouter(t, store, sessions.VenueSettings{})
+	response := postJSON(t, router, "/sessions", `{"offering_id":"4c39d74e-7b7c-4cb0-8bd5-c8274905e3ce",
+		"venue_id":"48c5efb3-9651-478d-9d70-bb5be469f62f"}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("start without a position = %d %s", response.Code, response.Body.String())
+	}
+	var result sessions.Started
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.LocationSource != sessions.LocationNone {
+		t.Fatalf("location_source = %q, want none", result.LocationSource)
+	}
+	if result.Session.Latitude != nil || result.Session.RadiusMeters != nil {
+		t.Fatalf("session geofence = %+v, want null", result.Session)
+	}
+	if store.started.CalibrateVenue {
+		t.Fatal("no fix was supplied, so nothing may be written to the venue")
+	}
+}
+
+func TestSessionStartHandlerIgnoresVagueFixInFavourOfVenue(t *testing.T) {
+	t.Parallel()
+	store := &handlerSessionStore{}
+	router := locationTestRouter(t, store, sessions.VenueSettings{
+		Latitude: 6.6, Longitude: 3.4, RadiusMeters: 90, Present: true,
+	})
+	response := postJSON(t, router, "/sessions", `{"offering_id":"4c39d74e-7b7c-4cb0-8bd5-c8274905e3ce",
+		"venue_id":"48c5efb3-9651-478d-9d70-bb5be469f62f",
+		"latitude":6.5244,"longitude":3.3792,"accuracy_meters":400}`)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("start = %d %s", response.Code, response.Body.String())
+	}
+	var result sessions.Started
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.LocationSource != sessions.LocationFromVenue {
+		t.Fatalf("location_source = %q, want venue", result.LocationSource)
+	}
+	if store.started.CalibrateVenue || *store.started.Latitude != 6.6 {
+		t.Fatalf("a 400 m fix must not centre the class or calibrate the room: %+v", store.started)
+	}
+}
+
+func TestSessionLocationHandlerOutcomes(t *testing.T) {
+	t.Parallel()
+	store := &handlerSessionStore{}
+	router := locationTestRouter(t, store, sessions.VenueSettings{
+		Latitude: 6.5244, Longitude: 3.3792, RadiusMeters: 75, Present: true,
+	})
+	if code := postJSON(t, router, "/sessions", `{"offering_id":"4c39d74e-7b7c-4cb0-8bd5-c8274905e3ce",
+		"venue_id":"48c5efb3-9651-478d-9d70-bb5be469f62f"}`).Code; code != http.StatusCreated {
+		t.Fatalf("start = %d", code)
+	}
+
+	drift := postJSON(t, router, "/sessions/"+testSessionID+"/location",
+		`{"latitude":6.5244,"longitude":3.3892,"accuracy_meters":10}`)
+	if drift.Code != http.StatusOK {
+		t.Fatalf("drift = %d %s", drift.Code, drift.Body.String())
+	}
+	var driftResult sessions.LocationResult
+	if err := json.Unmarshal(drift.Body.Bytes(), &driftResult); err != nil {
+		t.Fatal(err)
+	}
+	if driftResult.Outcome != sessions.LocationRejectedDistance {
+		t.Fatalf("outcome = %q, want rejected_distance", driftResult.Outcome)
+	}
+	if len(store.recentred) != 0 {
+		t.Fatal("a lecturer who walked out must not move the area for students still in the room")
+	}
+	if driftResult.Latitude == nil || *driftResult.Latitude != 6.5244 {
+		t.Fatalf("response must carry the geofence still in force: %+v", driftResult)
+	}
+
+	refine := postJSON(t, router, "/sessions/"+testSessionID+"/location",
+		`{"latitude":6.52477,"longitude":3.3792,"accuracy_meters":9}`)
+	var refineResult sessions.LocationResult
+	if refine.Code != http.StatusOK || json.Unmarshal(refine.Body.Bytes(), &refineResult) != nil {
+		t.Fatalf("refine = %d %s", refine.Code, refine.Body.String())
+	}
+	if refineResult.Outcome != sessions.LocationRefined || len(store.recentred) != 1 {
+		t.Fatalf("outcome = %q, writes = %d; want one refinement", refineResult.Outcome, len(store.recentred))
+	}
+
+	if bad := postJSON(t, router, "/sessions/"+testSessionID+"/location",
+		`{"latitude":6.5244,"longitude":3.3792}`); bad.Code != http.StatusBadRequest {
+		t.Fatalf("missing accuracy = %d %s; a mid-session fix without it cannot be judged",
+			bad.Code, bad.Body.String())
+	}
+
+	endRequest := httptest.NewRequest(http.MethodPost, "/sessions/"+testSessionID+"/end", nil)
+	endRequest = endRequest.WithContext(auth.WithPrincipal(endRequest.Context(), locationTestPrincipal()))
+	endResponse := httptest.NewRecorder()
+	router.ServeHTTP(endResponse, endRequest)
+	if endResponse.Code != http.StatusOK {
+		t.Fatalf("end = %d %s", endResponse.Code, endResponse.Body.String())
+	}
+	closed := postJSON(t, router, "/sessions/"+testSessionID+"/location",
+		`{"latitude":6.5244,"longitude":3.3792,"accuracy_meters":9}`)
+	if closed.Code != http.StatusConflict || !strings.Contains(closed.Body.String(), `"code":"session_closed"`) {
+		t.Fatalf("closed session = %d %s", closed.Code, closed.Body.String())
 	}
 }

@@ -8,8 +8,12 @@ import (
 func TestAutoRegisterClaimedStudentIsTenantAndScopeBound(t *testing.T) {
 	t.Parallel()
 	for _, fragment := range []string{
-		"WHERE institution_id = $1",
-		"AND id = $2",
+		// Qualified with the table name so sqlc resolves them against the CTE
+		// source rather than the INSERT target, which is ambiguous. The
+		// placeholder numbers are deliberately not asserted: sqlc assigns them
+		// from the named arguments, and the call site binds by field name.
+		"WHERE student_records.institution_id = ",
+		"AND student_records.id = ",
 		"offering.registration_mode = 'auto'",
 		"offering.level = student.level",
 		"course.department_id = student.department_id",

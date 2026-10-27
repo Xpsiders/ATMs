@@ -41,10 +41,17 @@ func (s *Store) CreateVenue(ctx context.Context, institutionID, userID string, i
 	if !allowed {
 		return nil, catalogue.ErrForbidden
 	}
+	// A venue without coordinates stores NULL for all three columns. Writing a
+	// zero radius instead would violate the surviving CHECK (radius_meters > 0),
+	// and a zero coordinate would be a real position off the coast of Ghana.
+	var radius *int
+	if input.Latitude != nil && input.RadiusMeters > 0 {
+		radius = &input.RadiusMeters
+	}
 	var id pgtype.UUID
 	err = tx.QueryRow(ctx, `INSERT INTO venues(institution_id,department_id,name,latitude,longitude,radius_meters)
 		VALUES($1,$2,$3,$4,$5,$6) RETURNING id`, tenant, departmentID, input.Name,
-		input.Latitude, input.Longitude, input.RadiusMeters).Scan(&id)
+		input.Latitude, input.Longitude, radius).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("insert venue: %w", err)
 	}
@@ -61,7 +68,7 @@ func (s *Store) CreateVenue(ctx context.Context, institutionID, userID string, i
 	}
 	return map[string]any{
 		"id": id.String(), "name": input.Name, "latitude": input.Latitude,
-		"longitude": input.Longitude, "radius_meters": input.RadiusMeters,
+		"longitude": input.Longitude, "radius_meters": radius,
 		"department_id": nullableUUIDString(departmentID), "active": true,
 	}, nil
 }
@@ -150,8 +157,9 @@ func (s *Store) UpdateVenue(ctx context.Context, institutionID, userID, venueID 
 	}
 	var venueIDResult pgtype.UUID
 	var name string
-	var latitude, longitude float64
-	var radius int32
+	// A venue may have no coordinates, so these three come back nullable.
+	var latitude, longitude *float64
+	var radius *int32
 	var department pgtype.UUID
 	var active bool
 	if err := rows.Scan(&venueIDResult, &name, &latitude, &longitude, &radius, &department, &active); err != nil {
@@ -174,6 +182,90 @@ func (s *Store) UpdateVenue(ctx context.Context, institutionID, userID, venueID 
 	return map[string]any{
 		"id": venueIDResult.String(), "name": name, "latitude": latitude, "longitude": longitude,
 		"radius_meters": radius, "department_id": nullableUUIDString(department), "active": active,
+	}, nil
+}
+
+// CaptureVenueLocation writes a position captured inside the venue over its
+// stored coordinates, deriving a radius when the venue has none set.
+func (s *Store) CaptureVenueLocation(
+	ctx context.Context,
+	institutionID, userID, venueID string,
+	location catalogue.VenueLocation,
+) (map[string]any, error) {
+	tenant, actor, err := parseVenueActor(institutionID, userID)
+	if err != nil {
+		return nil, err
+	}
+	id, err := db.ParseUUID(venueID)
+	if err != nil {
+		return nil, catalogue.ErrNotFound
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin venue location capture: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	var department pgtype.UUID
+	var currentRadius *int32
+	err = tx.QueryRow(ctx, `SELECT department_id,radius_meters FROM venues
+		WHERE institution_id=$1 AND id=$2 FOR UPDATE`, tenant, id).Scan(&department, &currentRadius)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, catalogue.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock venue for location capture: %w", err)
+	}
+	allowed, err := canManageVenueScope(ctx, tx, tenant, actor, institutionID, department)
+	if err != nil {
+		return nil, err
+	}
+	// A lecturer who teaches in this room may calibrate it even without
+	// administrative scope over the department. They are the only person who
+	// is ever actually standing in it, which is the whole premise of capturing
+	// a position instead of typing one; an administrator never visits.
+	if !allowed {
+		allowed, err = lecturerTeachesAtVenue(ctx, tx, tenant, actor, id)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !allowed {
+		return nil, catalogue.ErrForbidden
+	}
+	radius := 0
+	if currentRadius != nil {
+		radius = int(*currentRadius)
+	}
+	switch {
+	case location.RadiusMeters != nil:
+		radius = *location.RadiusMeters
+	case radius < 1:
+		radius = catalogue.VenueRadiusFromAccuracy(location.AccuracyMeters)
+	}
+	var name string
+	var active bool
+	err = tx.QueryRow(ctx, `UPDATE venues SET latitude=$3,longitude=$4,radius_meters=$5
+		WHERE institution_id=$1 AND id=$2 RETURNING name,active`,
+		tenant, id, location.Latitude, location.Longitude, radius).Scan(&name, &active)
+	if err != nil {
+		return nil, fmt.Errorf("store captured venue location: %w", err)
+	}
+	fields, err := json.Marshal(location)
+	if err != nil {
+		return nil, fmt.Errorf("encode venue location audit: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
+		VALUES($1,$2,'venue.location_captured','venue',$3,$4::jsonb)`, tenant, actor, id, fields); err != nil {
+		return nil, fmt.Errorf("audit venue location capture: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit venue location capture: %w", err)
+	}
+	return map[string]any{
+		"id": id.String(), "name": name, "latitude": location.Latitude,
+		"longitude": location.Longitude, "radius_meters": radius,
+		"accuracy_meters": location.AccuracyMeters,
+		"department_id":   nullableUUIDString(department), "active": active,
 	}, nil
 }
 
@@ -221,6 +313,23 @@ func (s *Store) DeactivateVenue(ctx context.Context, institutionID, userID, venu
 		return fmt.Errorf("commit venue deactivation: %w", err)
 	}
 	return nil
+}
+
+// lecturerTeachesAtVenue reports whether the actor is an assigned lecturer for
+// an offering timetabled at the venue. The device store asks the same question
+// of the same two tables; see lecturerTeachesAtVenue in
+// internal/devices/postgres.go.
+func lecturerTeachesAtVenue(ctx context.Context, queryer venueQueryer, tenant, actor, venueID pgtype.UUID) (bool, error) {
+	var teaches bool
+	err := queryer.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM offering_lecturers AS ol
+		JOIN timetable AS t ON t.institution_id=ol.institution_id AND t.offering_id=ol.offering_id
+		WHERE ol.institution_id=$1 AND ol.lecturer_user_id=$2 AND t.venue_id=$3)`,
+		tenant, actor, venueID).Scan(&teaches)
+	if err != nil {
+		return false, fmt.Errorf("resolve lecturer venue authority: %w", err)
+	}
+	return teaches, nil
 }
 
 func canManageVenueScope(
@@ -319,4 +428,7 @@ func nullableUUIDString(value pgtype.UUID) any {
 	return value.String()
 }
 
-var _ catalogue.VenueManagementStore = (*Store)(nil)
+var (
+	_ catalogue.VenueManagementStore = (*Store)(nil)
+	_ catalogue.VenueLocationStore   = (*Store)(nil)
+)

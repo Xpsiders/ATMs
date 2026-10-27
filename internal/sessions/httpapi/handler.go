@@ -37,6 +37,7 @@ func (h *Handler) RegisterRoutes(router chi.Router) {
 	router.Get("/me/live-classes", h.liveClasses)
 	router.Post("/sessions", h.start)
 	router.Patch("/sessions/{id}", h.fixCode)
+	router.Post("/sessions/{id}/location", h.updateLocation)
 	router.Post("/sessions/{id}/scanner-status", h.scannerStatus)
 	router.Post("/sessions/{id}/end", h.end)
 	router.Get("/sessions/{id}/code", h.code)
@@ -176,6 +177,11 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		Latitude     *float64 `json:"latitude" validate:"omitempty,gte=-90,lte=90"`
 		Longitude    *float64 `json:"longitude" validate:"omitempty,gte=-180,lte=180"`
 		RadiusMeters *int     `json:"radius_meters" validate:"omitempty,gte=1,lte=2147483647"`
+		// AccuracyMeters is the lecturer device's own reported error for the
+		// fix above. It is what separates a position good enough to calibrate
+		// the room from one that would strand the class, so it is sent
+		// unmodified by the app rather than rounded or defaulted here.
+		AccuracyMeters *float64 `json:"accuracy_meters" validate:"omitempty,gte=0"`
 	}
 	if err := httpx.DecodeJSON(w, r, &request); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
@@ -214,21 +220,45 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	if request.LateAfterMin != nil {
 		lateAfter = *request.LateAfterMin
 	}
-	latitude, longitude, radius := venue.Latitude, venue.Longitude, venue.RadiusMeters
-	if request.Latitude != nil {
-		latitude = *request.Latitude
+	// The lecturer's own device is the only reliable source of a venue's
+	// coordinates, because an administrator is never in the room. A fix that
+	// reports its accuracy and is precise enough centres this session and
+	// calibrates the venue; a vague one falls back to whatever the venue
+	// already has. Coordinates sent without an accuracy stay a manual
+	// override, honoured here but never written back to the venue.
+	fix := sessions.DeviceFix{Present: request.Latitude != nil && request.Longitude != nil}
+	if fix.Present {
+		fix.Latitude, fix.Longitude = *request.Latitude, *request.Longitude
 	}
-	if request.Longitude != nil {
-		longitude = *request.Longitude
+	if request.AccuracyMeters != nil {
+		fix.AccuracyMeters, fix.HasAccuracy = *request.AccuracyMeters, true
 	}
-	if request.RadiusMeters != nil {
-		radius = float64(*request.RadiusMeters)
+	resolved := sessions.ResolveStartLocation(fix, venue)
+	var latitude, longitude, radius *float64
+	if resolved.Present {
+		centreLatitude, centreLongitude := resolved.Latitude, resolved.Longitude
+		latitude, longitude = &centreLatitude, &centreLongitude
+		// A geofence needs a radius. The venue's own radius wins, since it was
+		// set for that room; a venue being calibrated for the first time has
+		// none, so one is derived from how precise the fix was.
+		centreRadius := sessions.RadiusForNewCentre(fix.AccuracyMeters)
+		if venue.Present && venue.RadiusMeters > 0 {
+			centreRadius = venue.RadiusMeters
+		}
+		radius = &centreRadius
+	}
+	// An explicit radius still overrides, but only where there is a centre for
+	// it to draw a circle around.
+	if request.RadiusMeters != nil && radius != nil {
+		requested := float64(*request.RadiusMeters)
+		radius = &requested
 	}
 	started, err := h.service.Start(r.Context(), sessions.StartInput{
 		InstitutionID: principal.Identity.InstitutionID, OfferingID: request.OfferingID,
 		VenueID: request.VenueID, TimetableID: request.TimetableID, StartedBy: principal.Identity.UserID,
 		Latitude: latitude, Longitude: longitude, RadiusMeters: radius, RotatingCode: rotating,
-		LateAfter: time.Duration(lateAfter) * time.Minute,
+		LateAfter: time.Duration(lateAfter) * time.Minute, LocationSource: resolved.Source,
+		CalibrateVenue: resolved.Calibrates, AccuracyMeters: fix.AccuracyMeters,
 	})
 	var venueErr *sessions.OpenVenueError
 	switch {
@@ -245,6 +275,71 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, started)
+}
+
+// updateLocation applies a fix taken on the lecturer's device while the class
+// is running, so a room whose stored centre is wrong, or absent, is corrected
+// by the person who is actually standing in it.
+func (h *Handler) updateLocation(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized, "authentication_required", "A bearer token is required", nil)
+		return
+	}
+	sessionID := chi.URLParam(r, "id")
+	if _, err := db.ParseUUID(sessionID); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Session ID is invalid", nil)
+		return
+	}
+	// Accuracy is required here, unlike on session start. A mid-session fix
+	// only ever moves a geofence students are already checking in against, and
+	// without the device's own error there is no way to tell a precise
+	// correction from a wild reading.
+	var request struct {
+		Latitude       *float64 `json:"latitude" validate:"required,gte=-90,lte=90"`
+		Longitude      *float64 `json:"longitude" validate:"required,gte=-180,lte=180"`
+		AccuracyMeters *float64 `json:"accuracy_meters" validate:"required,gte=0"`
+	}
+	if err := httpx.DecodeJSON(w, r, &request); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_json", "Request body is invalid", nil)
+		return
+	}
+	if err := httpx.ValidateStruct(request); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Location fields are invalid", nil)
+		return
+	}
+	allowed, err := h.access.CanManageSession(r.Context(), principal.Identity.InstitutionID,
+		sessionID, principal.Identity.UserID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "session location authorization failed", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to authorize location update", nil)
+		return
+	}
+	if !allowed {
+		httpx.WriteError(w, http.StatusForbidden, "session_access_denied", "You cannot manage this session", nil)
+		return
+	}
+	result, err := h.service.UpdateLocation(r.Context(), principal.Identity.InstitutionID,
+		sessionID, principal.Identity.UserID, sessions.DeviceFix{
+			Latitude: *request.Latitude, Longitude: *request.Longitude,
+			AccuracyMeters: *request.AccuracyMeters, HasAccuracy: true, Present: true,
+		})
+	switch {
+	case errors.Is(err, sessions.ErrSessionNotFound):
+		httpx.WriteError(w, http.StatusNotFound, "session_not_found", "Session was not found", nil)
+		return
+	case errors.Is(err, sessions.ErrSessionEnded):
+		httpx.WriteError(w, http.StatusConflict, "session_closed", "This session has already ended", nil)
+		return
+	case errors.Is(err, sessions.ErrInvalidLocation):
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Location fields are invalid", nil)
+		return
+	case err != nil:
+		slog.ErrorContext(r.Context(), "session location update failed", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to update session location", nil)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) end(w http.ResponseWriter, r *http.Request) {

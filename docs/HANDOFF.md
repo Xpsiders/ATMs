@@ -158,11 +158,94 @@ that every phase or database-backed behavior is complete. See
   paused). `gofmt`, `go vet`, `go build`, `go test`, and `openapi-typescript`
   validation passed for this slice.
 
+- **Location no longer gates attendance, and a venue's coordinates come from
+  the lecturer's device.** This replaced an earlier slice in which an
+  administrator captured venue coordinates; administrators are never in the
+  room, so that flow could not work in practice.
+
+  Nothing refuses a check-in on position any more and `ErrOutsideRadius` /
+  `outside_radius` are deleted. `POST /checkins` takes `lat`, `lng`, and
+  `accuracy` as optional (the browser may refuse a position, and the venue may
+  have no centre) and requires `device_hash`: per-session device binding is now
+  the anti-proxy control, so a second student from the same device is refused
+  with `device_already_used` (409). `location_unverified: true` now means the
+  fix landed further out than the phone's own reported error can explain
+  (allowance capped at 250 m past the radius); inside that allowance it is
+  simply accepted. Flagged rows report as `web_only_unverified` with reason
+  `location_unverified`.
+
+  Migration `00008_optional_venue_location.sql` drops NOT NULL from
+  `venues`/`lecture_sessions` latitude, longitude, radius_meters and from
+  `web_checkins` latitude, longitude, accuracy_meters, distance_meters, and
+  adds the partial index `web_checkins_session_device_idx` for the binding
+  lookup. `CHECK (radius_meters > 0)` survives, so a venue with no position
+  stores NULL for all three columns, never 0. Go side: `sessions.Session`,
+  `StartInput`, `VenueSettings`, `checkins.Session`/`CheckinRecord` and the
+  check-in response's `distance_meters` all became optional/pointer-valued.
+
+  `POST /sessions` accepts `accuracy_meters` and resolves the geofence through
+  `sessions.ResolveStartLocation`: a fix of 100 m or better centres the session
+  and is written back to the venue inside the session-create transaction
+  (`internal/sessions/postgres.calibrateVenue`, audited
+  `venue.location_captured`); a vaguer fix falls back to the venue; coordinates
+  without an accuracy stay a session-only override. The response reports
+  `location_source` as `device`, `venue`, or `none`. Starting a class never
+  depends on geolocation.
+
+  `POST /sessions/{id}/location` (new) applies a mid-session fix:
+  `refined` (recentres session + venue), `established` (first centre for a
+  venue that has none), `unchanged` (<10 m), `rejected_accuracy` (>100 m), and
+  `rejected_distance` (outside the session's own radius — the centre
+  deliberately does not move, so a lecturer stepping out cannot push the
+  students still in the room outside the area). `RecentreSession` re-checks
+  `ended_at IS NULL` in the UPDATE rather than trusting the earlier read.
+  `established` is a **fifth** outcome beyond the four pinned in the frontend
+  prompt; it needs no UI and is safe to ignore, but the prompt should be
+  updated.
+
+  `POST /venues/{id}/location` survives as the explicit "recalibrate this room"
+  action and is now open to a lecturer who teaches at the venue as well as to
+  administrators over its department (`lecturerTeachesAtVenue`, duplicating the
+  device store's query over `offering_lecturers`/`timetable`). `POST /venues`
+  needs only a name.
+
+  A radius is kept once set — a device fix says where a room is, not how big
+  it is. Only a venue with no radius takes one from
+  `sessions.RadiusForNewCentre`, which defers to
+  `catalogue.VenueRadiusFromAccuracy` so both calibration paths agree. The
+  shared haversine moved to `internal/geo`.
+
+  Deterministic tests: `internal/sessions/location_test.go` covers
+  `ResolveStartLocation` (trusted fix, vague fix, no fix and no venue, fix
+  without accuracy) and every `ClassifyLocationUpdate` outcome including the
+  nil-centre cases and unusable input; `service_test.go` covers `UpdateLocation`
+  writing and not writing, radius retention versus derivation, and closed and
+  unknown sessions; `handler_test.go` covers `location_source` for each source,
+  a start with location permission denied, a 400 for a mid-session fix with no
+  accuracy, and a 409 on a closed session. The check-in allowance,
+  classification reason and report query contract tests from the earlier slice
+  still pass.
+
+  `gofmt -l` (excluding `.claude/worktrees`), `go vet ./...`, `go build ./...`
+  and `go test ./...` pass; `npx @redocly/cli lint api/openapi.yaml` is valid
+  with the four existing recommended-rule warnings. **Nothing is verified
+  against PostgreSQL**: migration `00008`, the session-start calibration
+  transaction, `RecentreSession`, the device-binding query, the
+  `lecturerTeachesAtVenue` authorization path and the report query's derived
+  column are all unexercised. `sqlc generate` was broken on the pristine tree
+  (v1.29.0, "column reference institution_id is ambiguous" at
+  `db/queries/identity.sql:103`); `AutoRegisterClaimedStudent`'s CTE columns are
+  now qualified and `SetCourseRegistrationStatus` uses `sqlc.arg(approved_at)`,
+  and `internal/db/dbgen` is genuinely regenerated rather than hand-edited.
+
 ## Next priority
 
-Continue using the active order in `docs/PROGRESS.md`. Database verification
-of the catalogue scope queries, the seed loader, and the new device-management
-migration/queries remains blocked while Docker Desktop is paused; code work
+Continue using the active order in `docs/PROGRESS.md`. Re-run `make sqlc` to
+confirm the hand-edited `SessionReportPage` bindings match generated output.
+Database verification of the catalogue scope queries, the seed loader, the
+device-management migration/queries, and migration `00008` with the whole
+venue-location/device-binding slice remains blocked while Docker Desktop is
+paused; code work
 still outstanding includes aggregate reports, disputes, and remaining
 hardening. A natural device follow-up is auto-queuing fingerprint enrolment
 when a student registers for a course, rather than the current explicit

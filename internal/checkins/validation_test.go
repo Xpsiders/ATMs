@@ -34,12 +34,21 @@ func TestHaversineMeters(t *testing.T) {
 	}
 }
 
+func atVenue() *VenueCentre {
+	return &VenueCentre{Latitude: 0, Longitude: 0, RadiusMeters: 50}
+}
+
+// fixAt builds a position `degrees` of longitude east of the venue centre.
+// 0.001 degrees at the equator is about 111 metres.
+func fixAt(degrees, accuracy float64) *Fix {
+	return &Fix{Latitude: 0, Longitude: degrees, AccuracyMeters: accuracy}
+}
+
 func TestValidationOrderAndCodes(t *testing.T) {
 	t.Parallel()
 	base := Input{
 		SessionOpen: true, CodeValid: true, OnRoster: true,
-		Latitude: 0, Longitude: 0, VenueLatitude: 0, VenueLongitude: 0,
-		RadiusMeters: 50, AccuracyMeters: 5, Now: time.Unix(100, 0),
+		Fix: fixAt(0, 5), Venue: atVenue(), Now: time.Unix(100, 0),
 		StartedAt: time.Unix(0, 0), LateAfter: time.Minute,
 	}
 	tests := []struct {
@@ -50,13 +59,11 @@ func TestValidationOrderAndCodes(t *testing.T) {
 		{"closed session before code", func(i *Input) { i.SessionOpen = false; i.CodeValid = false }, ErrSessionClosed},
 		{"wrong code before roster", func(i *Input) { i.CodeValid = false; i.OnRoster = false }, ErrWrongCode},
 		{"not on roster", func(i *Input) { i.OnRoster = false }, ErrNotOnRoster},
-		{"outside radius before duplicate", func(i *Input) {
-			i.Longitude = 0.01
-			i.RadiusMeters = 10
-			i.AlreadyChecked = true
-		}, ErrOutsideRadius},
-		{"duplicate", func(i *Input) { i.AlreadyChecked = true }, ErrAlreadyExists},
-		{"invalid location", func(i *Input) { i.Latitude = 91 }, ErrInvalidInput},
+		{"duplicate before device", func(i *Input) { i.AlreadyChecked = true; i.DeviceUsed = true }, ErrAlreadyExists},
+		{"device already used", func(i *Input) { i.DeviceUsed = true }, ErrDeviceAlreadyUsed},
+		{"invalid accuracy", func(i *Input) { i.Fix = fixAt(0, -1) }, ErrInvalidInput},
+		{"invalid coordinate", func(i *Input) { i.Fix = &Fix{Latitude: 91} }, ErrInvalidInput},
+		{"invalid radius", func(i *Input) { i.Venue = &VenueCentre{RadiusMeters: -1} }, ErrInvalidInput},
 		{"invalid roster policy", func(i *Input) { i.RosterPolicy = "bad" }, ErrInvalidInput},
 	}
 	for _, tc := range tests {
@@ -72,45 +79,92 @@ func TestValidationOrderAndCodes(t *testing.T) {
 	}
 }
 
-func TestValidationRadiusAccuracyAndLateBoundary(t *testing.T) {
+// Location is evidence, never a gate. However far out or however vague the
+// fix, the check-in is recorded; only the unverified flag changes.
+func TestValidationNeverRefusesOnLocation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		fix         *Fix
+		venue       *VenueCentre
+		unverified  bool
+		hasDistance bool
+	}{
+		{"inside the radius", fixAt(0, 5), atVenue(), false, true},
+		{"outside but the accuracy explains it", fixAt(0.001, 80), atVenue(), false, true},
+		{"outside and the accuracy cannot explain it", fixAt(0.001, 5), atVenue(), true, true},
+		{"absurd accuracy cannot buy unlimited slack", fixAt(0.01, 100_000), atVenue(), true, true},
+		{"no fix at all", nil, atVenue(), false, false},
+		{"venue has no coordinates", fixAt(0.5, 5), nil, false, false},
+		{"neither side has a position", nil, nil, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result, code := Validate(Input{
+				SessionOpen: true, CodeValid: true, OnRoster: true,
+				Fix: tc.fix, Venue: tc.venue,
+				Now: time.Unix(0, 0), StartedAt: time.Unix(0, 0),
+			})
+			if code != "" {
+				t.Fatalf("Validate() refused on location with %q", code)
+			}
+			if result.LocationUnverified != tc.unverified {
+				t.Fatalf("LocationUnverified = %v, want %v", result.LocationUnverified, tc.unverified)
+			}
+			if (result.DistanceMeters != nil) != tc.hasDistance {
+				t.Fatalf("DistanceMeters = %v, want present=%v", result.DistanceMeters, tc.hasDistance)
+			}
+		})
+	}
+}
+
+// A student whose phone reports a vague fix is not penalised for it: the
+// accuracy only widens the tolerance, and the advisory flag is separate from
+// the decision.
+func TestValidationAccuracyIsAdvisoryAndLateBoundary(t *testing.T) {
 	t.Parallel()
 	start := time.Unix(1_700_000_000, 0)
 	input := Input{
 		SessionOpen: true, CodeValid: true, OnRoster: true,
-		Latitude: 0, Longitude: 0, VenueLatitude: 0, VenueLongitude: 0,
-		RadiusMeters: 0, AccuracyMeters: 101, Now: start.Add(5 * time.Minute),
+		Fix: fixAt(0, 101), Venue: atVenue(), Now: start.Add(5 * time.Minute),
 		StartedAt: start, LateAfter: 5 * time.Minute,
 	}
 	result, code := Validate(input)
-	if code != "" || result.DistanceMeters != 0 || !result.AccuracyPoor || result.Late {
+	if code != "" || !result.AccuracyPoor || result.Late || result.LocationUnverified {
 		t.Fatalf("boundary result = %+v, error=%q", result, code)
 	}
 	input.Now = input.Now.Add(time.Nanosecond)
-	result, code = Validate(input)
-	if code != "" || !result.Late {
+	if result, code = Validate(input); code != "" || !result.Late {
 		t.Fatalf("late result = %+v, error=%q", result, code)
 	}
 	input.Now = start
-	input.AccuracyMeters = 100
-	result, code = Validate(input)
-	if code != "" || result.AccuracyPoor {
+	input.Fix = fixAt(0, 100)
+	if result, code = Validate(input); code != "" || result.AccuracyPoor {
 		t.Fatalf("100m accuracy should be advisory only: result=%+v error=%q", result, code)
 	}
 	input.OnRoster = false
 	input.RosterPolicy = RosterOpen
-	result, code = Validate(input)
-	if code != "" || result.OnRoster {
+	if result, code = Validate(input); code != "" || result.OnRoster {
 		t.Fatalf("open roster did not accept and flag unregistered check-in: result=%+v error=%q", result, code)
 	}
-	input.RosterPolicy = RosterRegisteredOnly
-	input.OnRoster = true
-	input.RadiusMeters = -1
-	if _, code = Validate(input); code != ErrInvalidInput {
-		t.Fatalf("negative radius error = %q", code)
+}
+
+func TestAccuracyAllowanceMeters(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		accuracy float64
+		want     float64
+	}{
+		{0, 0},
+		{-5, 0},
+		{40, 40},
+		{MaxAccuracyAllowanceMeters, MaxAccuracyAllowanceMeters},
+		{5000, MaxAccuracyAllowanceMeters},
 	}
-	input.RadiusMeters = 0
-	input.AccuracyMeters = -1
-	if _, code = Validate(input); code != ErrInvalidInput {
-		t.Fatalf("negative accuracy error = %q", code)
+	for _, tc := range tests {
+		if got := AccuracyAllowanceMeters(tc.accuracy); got != tc.want {
+			t.Fatalf("AccuracyAllowanceMeters(%v) = %v, want %v", tc.accuracy, got, tc.want)
+		}
 	}
 }

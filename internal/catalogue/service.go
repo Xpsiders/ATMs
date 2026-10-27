@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -14,6 +15,9 @@ var (
 	// ErrResourceInUse is returned when a resource cannot be deleted because other
 	// rows still reference it (for example a course that still has offerings).
 	ErrResourceInUse = errors.New("catalogue item is still referenced by other records")
+	// ErrInaccurateLocation is returned when a captured position is too vague
+	// to use as a venue centre.
+	ErrInaccurateLocation = errors.New("captured location is not accurate enough")
 )
 
 type Resource string
@@ -53,12 +57,51 @@ type VenueManagementStore interface {
 	DeactivateVenue(context.Context, string, string, string) error
 }
 
+// VenueLocationStore records a venue's coordinates from a position captured on
+// the spot, so nobody has to read latitude and longitude off a map and type
+// them in.
+type VenueLocationStore interface {
+	CaptureVenueLocation(context.Context, string, string, string, VenueLocation) (map[string]any, error)
+}
+
+const (
+	// DefaultVenueRadiusMeters is used when a venue is created or calibrated
+	// without an explicit radius. A lecture theatre plus consumer-GPS drift
+	// fits comfortably inside it.
+	DefaultVenueRadiusMeters = 75
+	// MaxVenueRadiusMeters bounds a radius so one venue cannot cover a campus.
+	MaxVenueRadiusMeters = 2000
+	// MaxCaptureAccuracyMeters rejects a captured fix that is too vague to pin
+	// a room down; a bad reading would otherwise become the venue's permanent
+	// centre and skew every check-in against it.
+	MaxCaptureAccuracyMeters = 100
+)
+
+// VenueLocation is a position captured by the browser or phone of someone
+// standing in the venue. The device supplies all three values, so the caller
+// types nothing.
+type VenueLocation struct {
+	Latitude       float64 `json:"latitude" validate:"gte=-90,lte=90"`
+	Longitude      float64 `json:"longitude" validate:"gte=-180,lte=180"`
+	AccuracyMeters float64 `json:"accuracy_meters" validate:"gte=0"`
+	// RadiusMeters overrides the radius. When omitted the venue keeps its
+	// current radius, or takes a default derived from the captured accuracy.
+	RadiusMeters *int `json:"radius_meters,omitempty" validate:"omitempty,min=1,max=2000"`
+}
+
 type VenueInput struct {
-	Name         string  `json:"name" validate:"required,max=200"`
-	Latitude     float64 `json:"latitude" validate:"gte=-90,lte=90"`
-	Longitude    float64 `json:"longitude" validate:"gte=-180,lte=180"`
-	RadiusMeters int     `json:"radius_meters" validate:"required,min=1"`
-	DepartmentID string  `json:"department_id,omitempty" validate:"omitempty,uuid"`
+	Name string `json:"name" validate:"required,max=200"`
+	// Latitude and Longitude are optional. A venue is a named room first; its
+	// position is metadata that flags a doubtful check-in but never refuses
+	// one, so a venue may be created without ever being stood in. They are
+	// pointers because 0,0 is a real coordinate in the Gulf of Guinea and
+	// would otherwise be indistinguishable from "not supplied".
+	Latitude  *float64 `json:"latitude,omitempty" validate:"omitempty,gte=-90,lte=90"`
+	Longitude *float64 `json:"longitude,omitempty" validate:"omitempty,gte=-180,lte=180"`
+	// RadiusMeters is optional and only meaningful with coordinates; it
+	// defaults to DefaultVenueRadiusMeters.
+	RadiusMeters int    `json:"radius_meters,omitempty" validate:"omitempty,min=1,max=2000"`
+	DepartmentID string `json:"department_id,omitempty" validate:"omitempty,uuid"`
 }
 
 type VenueUpdate struct {
@@ -127,16 +170,70 @@ func (s *Service) ListVenues(ctx context.Context, institutionID, userID string, 
 
 func (s *Service) CreateVenue(ctx context.Context, institutionID, userID string, input VenueInput) (map[string]any, error) {
 	if institutionID == "" || userID == "" || strings.TrimSpace(input.Name) == "" ||
-		input.Latitude < -90 || input.Latitude > 90 || input.Longitude < -180 || input.Longitude > 180 ||
-		input.RadiusMeters < 1 {
+		input.RadiusMeters < 0 || input.RadiusMeters > MaxVenueRadiusMeters {
+		return nil, ErrInvalidRequest
+	}
+	// A position needs both halves. One without the other describes no point,
+	// and defaulting the missing half to zero would place the venue off the
+	// coast of Ghana.
+	if (input.Latitude == nil) != (input.Longitude == nil) {
+		return nil, ErrInvalidRequest
+	}
+	if input.Latitude != nil &&
+		(*input.Latitude < -90 || *input.Latitude > 90 ||
+			*input.Longitude < -180 || *input.Longitude > 180) {
 		return nil, ErrInvalidRequest
 	}
 	store, ok := s.store.(VenueManagementStore)
 	if !ok {
 		return nil, errors.New("venue management is not supported by this store")
 	}
+	// A radius without a centre draws no circle, so it is only defaulted for a
+	// venue that actually has coordinates.
+	if input.RadiusMeters == 0 && input.Latitude != nil {
+		input.RadiusMeters = DefaultVenueRadiusMeters
+	}
 	input.Name = strings.TrimSpace(input.Name)
 	return store.CreateVenue(ctx, institutionID, userID, input)
+}
+
+// CaptureVenueLocation stores a venue's coordinates from a fix taken inside the
+// room. A fix vaguer than MaxCaptureAccuracyMeters is refused so a poor reading
+// cannot become the venue's centre.
+func (s *Service) CaptureVenueLocation(
+	ctx context.Context,
+	institutionID, userID, venueID string,
+	location VenueLocation,
+) (map[string]any, error) {
+	if institutionID == "" || userID == "" || venueID == "" ||
+		location.Latitude < -90 || location.Latitude > 90 ||
+		location.Longitude < -180 || location.Longitude > 180 ||
+		location.AccuracyMeters < 0 ||
+		location.RadiusMeters != nil &&
+			(*location.RadiusMeters < 1 || *location.RadiusMeters > MaxVenueRadiusMeters) {
+		return nil, ErrInvalidRequest
+	}
+	if location.AccuracyMeters > MaxCaptureAccuracyMeters {
+		return nil, ErrInaccurateLocation
+	}
+	store, ok := s.store.(VenueLocationStore)
+	if !ok {
+		return nil, errors.New("venue location capture is not supported by this store")
+	}
+	return store.CaptureVenueLocation(ctx, institutionID, userID, venueID, location)
+}
+
+// VenueRadiusFromAccuracy derives a radius for a venue that has none, widening
+// the default when the captured fix itself was loose.
+func VenueRadiusFromAccuracy(accuracyMeters float64) int {
+	radius := DefaultVenueRadiusMeters
+	if rounded := int(math.Ceil(accuracyMeters)); rounded > radius {
+		radius = rounded
+	}
+	if radius > MaxVenueRadiusMeters {
+		radius = MaxVenueRadiusMeters
+	}
+	return radius
 }
 
 func (s *Service) UpdateVenue(ctx context.Context, institutionID, userID, venueID string, update VenueUpdate) (map[string]any, error) {

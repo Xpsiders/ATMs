@@ -223,8 +223,9 @@ func (s *Store) ListVenues(ctx context.Context, institutionIDText, userIDText st
 	items := make([]map[string]any, 0, limit)
 	for rows.Next() {
 		var id, name string
-		var latitude, longitude float64
-		var radius int32
+		// Nullable: a venue need not have been given a position.
+		var latitude, longitude *float64
+		var radius *int32
 		var department pgtype.Text
 		var active bool
 		if err := rows.Scan(&id, &name, &latitude, &longitude, &radius, &department, &active); err != nil {
