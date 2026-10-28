@@ -7,22 +7,38 @@ import (
 
 func TestVenueQueriesAreTenantScopedAndRoleGated(t *testing.T) {
 	t.Parallel()
-	for name, query := range map[string]string{
-		"permission": canListVenues,
-		"list":       listVenues,
-		"count":      countVenues,
+	if !strings.Contains(canListVenues, "institution_id = $1") {
+		t.Errorf("venue permission query is not tenant-scoped: %s", canListVenues)
+	}
+	for _, roleScope := range []struct{ role, scope string }{
+		{"platform_admin", "platform"},
+		{"institution_admin", "institution"},
+		{"faculty_admin", "faculty"},
+		{"department_admin", "department"},
+		{"lecturer", "department"},
 	} {
-		if !strings.Contains(query, "institution_id = $1") {
-			t.Errorf("%s query is not tenant-scoped: %s", name, query)
+		condition := "(role = '" + roleScope.role + "' AND scope_type = '" + roleScope.scope + "')"
+		if !strings.Contains(canListVenues, condition) {
+			t.Errorf("venue permission query does not allow scoped role %s: %s", roleScope.role, canListVenues)
 		}
 	}
-	for _, role := range []string{"platform_admin", "institution_admin", "faculty_admin", "department_admin", "lecturer"} {
-		if !strings.Contains(canListVenues, "'"+role+"'") {
-			t.Errorf("venue permission query does not allow %s", role)
-		}
-	}
-	if strings.Contains(canListVenues, "'student'") {
+	if strings.Contains(canListVenues, "role = 'student'") {
 		t.Fatal("student role must not be allowed to list venues")
+	}
+}
+
+func TestCanManageOfferingAllowsOnlyCoordinatorOrAssignedLecturer(t *testing.T) {
+	t.Parallel()
+	for _, fragment := range []string{
+		"o.institution_id = $1",
+		"o.id = $2",
+		"o.coordinator_user_id = $3",
+		"ol.offering_id = o.id",
+		"ol.lecturer_user_id = $3",
+	} {
+		if !strings.Contains(canManageOffering, fragment) {
+			t.Errorf("offering start authorization query missing %q: %s", fragment, canManageOffering)
+		}
 	}
 }
 

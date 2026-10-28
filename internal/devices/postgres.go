@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"attendance-api/internal/auth"
@@ -38,6 +40,40 @@ type queryer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
 
+const (
+	deviceAssignmentsQuery = `SELECT role,scope_type,institution_id,faculty_id,department_id
+		FROM role_assignments WHERE institution_id=$1 AND user_id=$2`
+	deviceListQuery = `SELECT d.id::text, d.name, d.venue_id::text, v.name,
+			v.department_id::text, d.key_hash IS NOT NULL, d.disabled_at IS NOT NULL,
+			d.paired_at, d.last_seen_at, d.firmware_version, d.battery_percent,
+			d.pending_queue_depth, d.status_reported_at,
+			(SELECT min(c.expires_at) FROM device_pairing_codes c
+			   WHERE c.institution_id=d.institution_id AND c.device_id=d.id
+			     AND c.consumed_at IS NULL AND c.expires_at > $4)
+		FROM devices d
+		JOIN venues v ON v.institution_id=d.institution_id AND v.id=d.venue_id
+		WHERE d.institution_id=$1
+		ORDER BY d.name, d.id
+		LIMIT $2 OFFSET $3`
+	venueScannerStatusAuthorizationQuery = `SELECT EXISTS (
+		SELECT 1 FROM role_assignments
+		WHERE institution_id=$1 AND user_id=$2
+		  AND (
+			(role='platform_admin' AND scope_type='platform')
+			OR (role='institution_admin' AND scope_type='institution')
+			OR (role='faculty_admin' AND scope_type='faculty')
+			OR (role='department_admin' AND scope_type='department')
+			OR (role='lecturer' AND scope_type='department')
+		  )
+	)`
+	venueScannerSnapshotQuery = `SELECT count(d.id), max(d.last_seen_at)
+		FROM venues v
+		LEFT JOIN devices d ON d.institution_id=v.institution_id AND d.venue_id=v.id
+			AND d.disabled_at IS NULL
+		WHERE v.institution_id=$1 AND v.id=$2
+		GROUP BY v.id`
+)
+
 func (s *PostgresStore) Provision(ctx context.Context, actor auth.Identity, input ProvisionInput, code PairingCode, now time.Time) (Device, error) {
 	tenant, actorID, err := parseActor(actor)
 	if err != nil {
@@ -53,6 +89,9 @@ func (s *PostgresStore) Provision(ctx context.Context, actor auth.Identity, inpu
 	}
 	defer tx.Rollback(ctx)
 
+	if err := s.requireScannerManagement(ctx, tx, tenant, actorID, actor.InstitutionID, input.VenueID); err != nil {
+		return Device{}, err
+	}
 	var venueName string
 	var department pgtype.UUID
 	err = tx.QueryRow(ctx, `SELECT name, department_id FROM venues
@@ -63,10 +102,6 @@ func (s *PostgresStore) Provision(ctx context.Context, actor auth.Identity, inpu
 	if err != nil {
 		return Device{}, fmt.Errorf("resolve device venue: %w", err)
 	}
-	if err := s.assertVenueScope(ctx, tx, tenant, actorID, actor.InstitutionID, venueID, department); err != nil {
-		return Device{}, err
-	}
-
 	var id pgtype.UUID
 	err = tx.QueryRow(ctx, `INSERT INTO devices(institution_id,venue_id,name)
 		VALUES($1,$2,$3) RETURNING id`, tenant, venueID, input.Name).Scan(&id)
@@ -96,34 +131,10 @@ func (s *PostgresStore) List(ctx context.Context, actor auth.Identity, filter Li
 	if err != nil {
 		return nil, err
 	}
-	assignments, err := loadAssignments(ctx, s.pool, tenant, actorID)
-	if err != nil {
+	if err := s.requireScannerManagement(ctx, s.pool, tenant, actorID, actor.InstitutionID, actor.InstitutionID); err != nil {
 		return nil, err
 	}
-	institution, departments, err := s.listScope(ctx, tenant, assignments)
-	if err != nil {
-		return nil, err
-	}
-	venues, err := lecturerVenues(ctx, s.pool, tenant, actorID)
-	if err != nil {
-		return nil, err
-	}
-	if !institution && len(departments) == 0 && len(venues) == 0 {
-		return nil, ErrDeviceScopeDenied
-	}
-	rows, err := s.pool.Query(ctx, `SELECT d.id::text, d.name, d.venue_id::text, v.name,
-			v.department_id::text, d.key_hash IS NOT NULL, d.disabled_at IS NOT NULL,
-			d.paired_at, d.last_seen_at, d.firmware_version, d.battery_percent,
-			d.pending_queue_depth, d.status_reported_at,
-			(SELECT min(c.expires_at) FROM device_pairing_codes c
-			   WHERE c.institution_id=d.institution_id AND c.device_id=d.id
-			     AND c.consumed_at IS NULL AND c.expires_at > $5)
-		FROM devices d
-		JOIN venues v ON v.institution_id=d.institution_id AND v.id=d.venue_id
-		WHERE d.institution_id=$1 AND ($2 OR v.department_id = ANY($3) OR v.id = ANY($7))
-		ORDER BY d.name, d.id
-		LIMIT $4 OFFSET $6`,
-		tenant, institution, departments, filter.Limit, time.Now().UTC(), filter.Offset, venues)
+	rows, err := s.pool.Query(ctx, deviceListQuery, tenant, filter.Limit, filter.Offset, time.Now().UTC())
 	if err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
 	}
@@ -164,6 +175,38 @@ func (s *PostgresStore) List(ctx context.Context, actor auth.Identity, filter Li
 	return devices, nil
 }
 
+func (s *PostgresStore) VenueScannerSnapshot(ctx context.Context, actor auth.Identity, venueID string) (ScannerSnapshot, error) {
+	tenant, actorID, err := parseActor(actor)
+	if err != nil {
+		return ScannerSnapshot{}, err
+	}
+	id, err := db.ParseUUID(venueID)
+	if err != nil {
+		return ScannerSnapshot{}, ErrVenueNotFound
+	}
+	var reader bool
+	if err := s.pool.QueryRow(ctx, venueScannerStatusAuthorizationQuery, tenant, actorID).Scan(&reader); err != nil {
+		return ScannerSnapshot{}, fmt.Errorf("authorize venue scanner status: %w", err)
+	}
+	if !reader {
+		return ScannerSnapshot{}, ErrVenueStatusDenied
+	}
+	var count int64
+	var lastSeen pgtype.Timestamptz
+	if err := s.pool.QueryRow(ctx, venueScannerSnapshotQuery, tenant, id).Scan(&count, &lastSeen); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ScannerSnapshot{}, ErrVenueNotFound
+		}
+		return ScannerSnapshot{}, fmt.Errorf("load venue scanner status: %w", err)
+	}
+	snapshot := ScannerSnapshot{Exists: count > 0}
+	if lastSeen.Valid {
+		value := lastSeen.Time.UTC()
+		snapshot.LastSeenAt = &value
+	}
+	return snapshot, nil
+}
+
 func (s *PostgresStore) IssuePairingCode(ctx context.Context, actor auth.Identity, deviceID string, code PairingCode, now time.Time, rotate bool) error {
 	tenant, actorID, err := parseActor(actor)
 	if err != nil {
@@ -179,7 +222,7 @@ func (s *PostgresStore) IssuePairingCode(ctx context.Context, actor auth.Identit
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, id); err != nil {
+	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, deviceID, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE device_pairing_codes SET consumed_at=$3
@@ -221,7 +264,7 @@ func (s *PostgresStore) Revoke(ctx context.Context, actor auth.Identity, deviceI
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, id); err != nil {
+	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, deviceID, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE devices SET disabled_at=$3
@@ -260,7 +303,7 @@ func (s *PostgresStore) EnqueueEnrolment(ctx context.Context, actor auth.Identit
 	}
 	defer tx.Rollback(ctx)
 
-	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, id); err != nil {
+	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, deviceID, id); err != nil {
 		return Enrolment{}, err
 	}
 	var exists int
@@ -342,154 +385,44 @@ func (s *PostgresStore) Pair(ctx context.Context, codeHash []byte, now time.Time
 	}, nil
 }
 
-// lockDeviceScope locks a non-revoked device, resolves its venue and department,
-// and asserts the actor may manage it.
-func (s *PostgresStore) lockDeviceScope(ctx context.Context, tx pgx.Tx, tenant, actorID pgtype.UUID, institutionID string, deviceID pgtype.UUID) error {
-	var venueID, department pgtype.UUID
-	err := tx.QueryRow(ctx, `SELECT d.venue_id, v.department_id
+func (s *PostgresStore) lockDeviceScope(ctx context.Context, tx pgx.Tx, tenant, actorID pgtype.UUID, institutionID, targetID string, deviceID pgtype.UUID) error {
+	if err := s.requireScannerManagement(ctx, tx, tenant, actorID, institutionID, targetID); err != nil {
+		return err
+	}
+	var venueID pgtype.UUID
+	err := tx.QueryRow(ctx, `SELECT d.venue_id
 		FROM devices d
-		JOIN venues v ON v.institution_id=d.institution_id AND v.id=d.venue_id
 		WHERE d.institution_id=$1 AND d.id=$2 AND d.disabled_at IS NULL
-		FOR UPDATE OF d`, tenant, deviceID).Scan(&venueID, &department)
+		FOR UPDATE OF d`, tenant, deviceID).Scan(&venueID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrDeviceNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("lock device for management: %w", err)
 	}
-	return s.assertVenueScope(ctx, tx, tenant, actorID, institutionID, venueID, department)
+	return nil
 }
 
-// assertVenueScope allows the action when the actor holds administrator write
-// authority over the venue's department, or when the actor is a lecturer who
-// teaches at the venue; otherwise it returns ErrDeviceScopeDenied.
-func (s *PostgresStore) assertVenueScope(ctx context.Context, q queryer, tenant, actorID pgtype.UUID, institutionID string, venueID, department pgtype.UUID) error {
-	target := rbac.Target{InstitutionID: institutionID}
-	if department.Valid {
-		var facultyID string
-		err := q.QueryRow(ctx, `SELECT faculty_id::text FROM departments
-			WHERE institution_id=$1 AND id=$2`, tenant, department).Scan(&facultyID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrInvalidDeviceRequest
-		}
-		if err != nil {
-			return fmt.Errorf("resolve device department scope: %w", err)
-		}
-		target.FacultyID = facultyID
-		target.DepartmentID = department.String()
-	}
+func (s *PostgresStore) requireScannerManagement(ctx context.Context, q queryer, tenant, actorID pgtype.UUID, institutionID, targetID string) error {
 	assignments, err := loadAssignments(ctx, q, tenant, actorID)
 	if err != nil {
 		return err
 	}
-	if scopeAllows(assignments, target) {
+	if scannerAdminAllows(assignments, institutionID) {
 		return nil
 	}
-	teaches, err := lecturerTeachesAtVenue(ctx, q, tenant, actorID, venueID)
-	if err != nil {
-		return err
-	}
-	if teaches {
-		return nil
-	}
-	return ErrDeviceScopeDenied
-}
-
-// lecturerTeachesAtVenue reports whether the actor is an assigned lecturer for
-// an offering timetabled at the venue.
-func lecturerTeachesAtVenue(ctx context.Context, q queryer, tenant, actorID, venueID pgtype.UUID) (bool, error) {
-	var teaches bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (
-		SELECT 1 FROM offering_lecturers ol
-		JOIN timetable t ON t.institution_id=ol.institution_id AND t.offering_id=ol.offering_id
-		WHERE ol.institution_id=$1 AND ol.lecturer_user_id=$2 AND t.venue_id=$3)`,
-		tenant, actorID, venueID).Scan(&teaches)
-	if err != nil {
-		return false, fmt.Errorf("resolve lecturer venue authority: %w", err)
-	}
-	return teaches, nil
-}
-
-// lecturerVenues returns the distinct venues the actor teaches at, so scanners
-// at those venues appear in their device listing.
-func lecturerVenues(ctx context.Context, q queryer, tenant, actorID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.Query(ctx, `SELECT DISTINCT t.venue_id FROM offering_lecturers ol
-		JOIN timetable t ON t.institution_id=ol.institution_id AND t.offering_id=ol.offering_id
-		WHERE ol.institution_id=$1 AND ol.lecturer_user_id=$2`, tenant, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("load lecturer venues: %w", err)
-	}
-	defer rows.Close()
-	venues := []pgtype.UUID{}
-	for rows.Next() {
-		var venueID pgtype.UUID
-		if err := rows.Scan(&venueID); err != nil {
-			return nil, fmt.Errorf("scan lecturer venue: %w", err)
-		}
-		venues = append(venues, venueID)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read lecturer venues: %w", err)
-	}
-	return venues, nil
-}
-
-// listScope resolves whether the actor administers the whole institution and,
-// if not, the set of departments they may see (faculties expanded).
-func (s *PostgresStore) listScope(ctx context.Context, tenant pgtype.UUID, assignments []rbac.Assignment) (bool, []pgtype.UUID, error) {
-	institution := false
-	departmentSet := map[string]struct{}{}
-	var faculties []pgtype.UUID
+	roles := make([]string, 0, len(assignments))
 	for _, assignment := range assignments {
-		switch assignment.Role {
-		case "institution_admin":
-			if assignment.ScopeType == rbac.ScopeInstitution && assignment.InstitutionID != "" {
-				institution = true
-			}
-		case "department_admin":
-			if assignment.ScopeType == rbac.ScopeDepartment && assignment.DepartmentID != "" {
-				departmentSet[assignment.DepartmentID] = struct{}{}
-			}
-		case "faculty_admin":
-			if assignment.ScopeType == rbac.ScopeFaculty && assignment.FacultyID != "" {
-				parsed, err := db.ParseUUID(assignment.FacultyID)
-				if err != nil {
-					return false, nil, fmt.Errorf("parse faculty scope: %w", err)
-				}
-				faculties = append(faculties, parsed)
-			}
-		}
+		roles = append(roles, assignment.Role)
 	}
-	if institution {
-		return true, nil, nil
+	role := strings.Join(roles, ",")
+	if role == "" {
+		role = "none"
 	}
-	if len(faculties) > 0 {
-		rows, err := s.pool.Query(ctx, `SELECT id::text FROM departments
-			WHERE institution_id=$1 AND faculty_id = ANY($2)`, tenant, faculties)
-		if err != nil {
-			return false, nil, fmt.Errorf("expand faculty device scope: %w", err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var departmentID string
-			if err := rows.Scan(&departmentID); err != nil {
-				return false, nil, fmt.Errorf("scan faculty department scope: %w", err)
-			}
-			departmentSet[departmentID] = struct{}{}
-		}
-		if err := rows.Err(); err != nil {
-			return false, nil, fmt.Errorf("read faculty department scope: %w", err)
-		}
-	}
-	departments := make([]pgtype.UUID, 0, len(departmentSet))
-	for value := range departmentSet {
-		parsed, err := db.ParseUUID(value)
-		if err != nil {
-			return false, nil, fmt.Errorf("parse department scope: %w", err)
-		}
-		departments = append(departments, parsed)
-	}
-	return false, departments, nil
+	slog.WarnContext(ctx, "scanner management denied",
+		"role", role, "target_id", targetID,
+		"reason", ScannerManagementDeniedMessage)
+	return ErrDeviceScopeDenied
 }
 
 func insertPairingCode(ctx context.Context, q queryer, tenant, deviceID, actorID pgtype.UUID, code PairingCode) error {
@@ -513,8 +446,7 @@ func writeAudit(ctx context.Context, q queryer, tenant, actorID pgtype.UUID, act
 }
 
 func loadAssignments(ctx context.Context, q queryer, tenant, actorID pgtype.UUID) ([]rbac.Assignment, error) {
-	rows, err := q.Query(ctx, `SELECT role,scope_type,institution_id,faculty_id,department_id
-		FROM role_assignments WHERE institution_id=$1 AND user_id=$2`, tenant, actorID)
+	rows, err := q.Query(ctx, deviceAssignmentsQuery, tenant, actorID)
 	if err != nil {
 		return nil, fmt.Errorf("load device management roles: %w", err)
 	}

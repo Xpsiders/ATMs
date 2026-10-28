@@ -3,6 +3,7 @@ package devices
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +39,25 @@ type fakeRepo struct {
 	err error
 }
 
-func (r *fakeRepo) Provision(_ context.Context, _ auth.Identity, input ProvisionInput, code PairingCode, _ time.Time) (Device, error) {
+func (r *fakeRepo) authorize(actor auth.Identity, target string) error {
+	role := actorRole(actor)
+	scope := map[string]string{
+		"platform_admin":    "platform",
+		"institution_admin": "institution",
+		"faculty_admin":     "faculty",
+		"department_admin":  "department",
+		"lecturer":          "department",
+	}[role]
+	if !scannerAdminAllows([]rbac.Assignment{{Role: role, ScopeType: rbac.ScopeType(scope), InstitutionID: actor.InstitutionID}}, actor.InstitutionID) {
+		return ErrDeviceScopeDenied
+	}
+	return nil
+}
+
+func (r *fakeRepo) Provision(_ context.Context, actor auth.Identity, input ProvisionInput, code PairingCode, _ time.Time) (Device, error) {
+	if err := r.authorize(actor, input.VenueID); err != nil {
+		return Device{}, err
+	}
 	r.provisionInput = input
 	r.provisionCode = code
 	if r.err != nil {
@@ -47,7 +66,10 @@ func (r *fakeRepo) Provision(_ context.Context, _ auth.Identity, input Provision
 	return Device{ID: testDevice, Name: input.Name, VenueID: input.VenueID, Status: StatusUnpaired}, nil
 }
 
-func (r *fakeRepo) List(_ context.Context, _ auth.Identity, filter ListFilter) ([]Device, error) {
+func (r *fakeRepo) List(_ context.Context, actor auth.Identity, filter ListFilter) ([]Device, error) {
+	if err := r.authorize(actor, actor.InstitutionID); err != nil {
+		return nil, err
+	}
 	if r.err != nil {
 		return nil, r.err
 	}
@@ -57,19 +79,39 @@ func (r *fakeRepo) List(_ context.Context, _ auth.Identity, filter ListFilter) (
 	return r.listReturn, nil
 }
 
-func (r *fakeRepo) IssuePairingCode(_ context.Context, _ auth.Identity, deviceID string, code PairingCode, _ time.Time, rotate bool) error {
+func (r *fakeRepo) VenueScannerSnapshot(_ context.Context, actor auth.Identity, venueID string) (ScannerSnapshot, error) {
+	if !venueStatusRole(actor) {
+		return ScannerSnapshot{}, ErrVenueStatusDenied
+	}
+	if r.err != nil {
+		return ScannerSnapshot{}, r.err
+	}
+	lastSeen := time.Unix(1_800_000_000, 0).UTC()
+	return ScannerSnapshot{Exists: true, LastSeenAt: &lastSeen}, nil
+}
+
+func (r *fakeRepo) IssuePairingCode(_ context.Context, actor auth.Identity, deviceID string, code PairingCode, _ time.Time, rotate bool) error {
+	if err := r.authorize(actor, deviceID); err != nil {
+		return err
+	}
 	code.DeviceID = deviceID
 	r.issued = &code
 	r.issuedRotate = rotate
 	return r.err
 }
 
-func (r *fakeRepo) Revoke(_ context.Context, _ auth.Identity, deviceID string, _ time.Time) error {
+func (r *fakeRepo) Revoke(_ context.Context, actor auth.Identity, deviceID string, _ time.Time) error {
+	if err := r.authorize(actor, deviceID); err != nil {
+		return err
+	}
 	r.revoked = deviceID
 	return r.err
 }
 
-func (r *fakeRepo) EnqueueEnrolment(_ context.Context, _ auth.Identity, deviceID, studentRecordID string, _ time.Time) (Enrolment, error) {
+func (r *fakeRepo) EnqueueEnrolment(_ context.Context, actor auth.Identity, deviceID, studentRecordID string, _ time.Time) (Enrolment, error) {
+	if err := r.authorize(actor, deviceID); err != nil {
+		return Enrolment{}, err
+	}
 	r.enrolDevice = deviceID
 	r.enrolStudent = studentRecordID
 	if r.err != nil {
@@ -89,39 +131,131 @@ func (r *fakeRepo) Pair(_ context.Context, codeHash []byte, _ time.Time) (Paired
 var _ Repository = (*fakeRepo)(nil)
 
 func actor() auth.Identity {
-	return auth.Identity{InstitutionID: testInstitution, UserID: testUser}
+	return roleActor("institution_admin")
+}
+
+func roleActor(role string) auth.Identity {
+	return auth.Identity{InstitutionID: testInstitution, UserID: role + "-" + testUser}
+}
+
+func venueStatusRole(actor auth.Identity) bool {
+	role := actorRole(actor)
+	switch role {
+	case "platform_admin", "institution_admin", "faculty_admin", "department_admin", "lecturer":
+		return true
+	default:
+		return false
+	}
+}
+
+func actorRole(actor auth.Identity) string {
+	for _, role := range []string{"platform_admin", "institution_admin", "faculty_admin", "department_admin", "lecturer"} {
+		if strings.HasPrefix(actor.UserID, role+"-") {
+			return role
+		}
+	}
+	return ""
 }
 
 func newService(t *testing.T, repo Repository) *Service {
 	t.Helper()
-	service, err := NewService(repo, fixedClock{now: time.Unix(1_800_000_000, 0).UTC()})
+	service, err := NewService(repo, fixedClock{now: time.Unix(1_800_000_000, 0).UTC()}, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return service
 }
 
-func TestScopeAllowsHonorsVenueDepartment(t *testing.T) {
+func TestScannerAdminAllowsOnlyInstitutionAndPlatformAdminsInTenant(t *testing.T) {
 	t.Parallel()
-	departmentTarget := rbac.Target{InstitutionID: testInstitution, FacultyID: testFaculty, DepartmentID: testDepartment}
-	institutionTarget := rbac.Target{InstitutionID: testInstitution}
 	cases := []struct {
 		name       string
 		assignment rbac.Assignment
-		target     rbac.Target
 		want       bool
 	}{
-		{"institution admin everywhere", rbac.Assignment{Role: "institution_admin", ScopeType: rbac.ScopeInstitution, InstitutionID: testInstitution}, departmentTarget, true},
-		{"faculty admin in faculty", rbac.Assignment{Role: "faculty_admin", ScopeType: rbac.ScopeFaculty, InstitutionID: testInstitution, FacultyID: testFaculty}, departmentTarget, true},
-		{"faculty admin other faculty", rbac.Assignment{Role: "faculty_admin", ScopeType: rbac.ScopeFaculty, InstitutionID: testInstitution, FacultyID: "99999999-9999-4999-8999-999999999999"}, departmentTarget, false},
-		{"department admin in department", rbac.Assignment{Role: "department_admin", ScopeType: rbac.ScopeDepartment, InstitutionID: testInstitution, DepartmentID: testDepartment}, departmentTarget, true},
-		{"department admin other department", rbac.Assignment{Role: "department_admin", ScopeType: rbac.ScopeDepartment, InstitutionID: testInstitution, DepartmentID: "99999999-9999-4999-8999-999999999999"}, departmentTarget, false},
-		{"department admin on institution venue", rbac.Assignment{Role: "department_admin", ScopeType: rbac.ScopeDepartment, InstitutionID: testInstitution, DepartmentID: testDepartment}, institutionTarget, false},
-		{"lecturer denied", rbac.Assignment{Role: "lecturer", ScopeType: rbac.ScopeDepartment, InstitutionID: testInstitution, DepartmentID: testDepartment}, departmentTarget, false},
+		{"institution admin", rbac.Assignment{Role: "institution_admin", ScopeType: rbac.ScopeInstitution, InstitutionID: testInstitution}, true},
+		{"platform admin", rbac.Assignment{Role: "platform_admin", ScopeType: rbac.ScopePlatform, InstitutionID: testInstitution}, true},
+		{"department admin", rbac.Assignment{Role: "department_admin", ScopeType: rbac.ScopeDepartment, InstitutionID: testInstitution, DepartmentID: testDepartment}, false},
+		{"faculty admin", rbac.Assignment{Role: "faculty_admin", ScopeType: rbac.ScopeFaculty, InstitutionID: testInstitution, FacultyID: testFaculty}, false},
+		{"lecturer", rbac.Assignment{Role: "lecturer", ScopeType: rbac.ScopeDepartment, InstitutionID: testInstitution, DepartmentID: testDepartment}, false},
+		{"wrong institution", rbac.Assignment{Role: "institution_admin", ScopeType: rbac.ScopeInstitution, InstitutionID: "99999999-9999-4999-8999-999999999999"}, false},
+		{"wrong platform scope", rbac.Assignment{Role: "platform_admin", ScopeType: rbac.ScopeInstitution, InstitutionID: testInstitution}, false},
 	}
 	for _, tc := range cases {
-		if got := scopeAllows([]rbac.Assignment{tc.assignment}, tc.target); got != tc.want {
-			t.Errorf("%s: scopeAllows = %v, want %v", tc.name, got, tc.want)
+		if got := scannerAdminAllows([]rbac.Assignment{tc.assignment}, testInstitution); got != tc.want {
+			t.Errorf("%s: scannerAdminAllows = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestVenueStatusClassifiesRecentStaleAndMissingScanners(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(1_800_000_000, 0).UTC()
+	tests := []struct {
+		name     string
+		snapshot ScannerSnapshot
+		want     string
+	}{
+		{"online", ScannerSnapshot{Exists: true, LastSeenAt: timePointer(now.Add(-30 * time.Second))}, ScannerOnline},
+		{"offline", ScannerSnapshot{Exists: true, LastSeenAt: timePointer(now.Add(-2 * time.Minute))}, ScannerOffline},
+		{"never seen", ScannerSnapshot{Exists: true}, ScannerOffline},
+		{"no scanner", ScannerSnapshot{}, ScannerNoDevice},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &statusRepo{fakeRepo: &fakeRepo{}, snapshot: test.snapshot}
+			service, err := NewService(repo, fixedClock{now: now}, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := service.VenueStatus(context.Background(), actor(), testVenue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != test.want {
+				t.Fatalf("status = %q, want %q", got.Status, test.want)
+			}
+		})
+	}
+}
+
+type statusRepo struct {
+	*fakeRepo
+	snapshot ScannerSnapshot
+}
+
+func (r *statusRepo) VenueScannerSnapshot(context.Context, auth.Identity, string) (ScannerSnapshot, error) {
+	return r.snapshot, nil
+}
+
+func timePointer(value time.Time) *time.Time { return &value }
+
+func TestDeviceAndVenueStatusQueriesAreTenantScopedAndDoNotExposeManagementSecrets(t *testing.T) {
+	t.Parallel()
+	for name, query := range map[string]string{
+		"device list":          deviceListQuery,
+		"scanner status":       venueScannerSnapshotQuery,
+		"status authorization": venueScannerStatusAuthorizationQuery,
+		"role assignments":     deviceAssignmentsQuery,
+	} {
+		if !strings.Contains(query, "institution_id=$1") {
+			t.Errorf("%s query missing tenant condition: %s", name, query)
+		}
+	}
+	for _, forbidden := range []string{"key_hash", "pairing_code", "pairing_codes", "device_key"} {
+		if strings.Contains(venueScannerSnapshotQuery, forbidden) {
+			t.Errorf("scanner status query references secret/management data %q", forbidden)
+		}
+		for _, roleScope := range []string{
+			"(role='platform_admin' AND scope_type='platform')",
+			"(role='institution_admin' AND scope_type='institution')",
+			"(role='faculty_admin' AND scope_type='faculty')",
+			"(role='department_admin' AND scope_type='department')",
+			"(role='lecturer' AND scope_type='department')",
+		} {
+			if !strings.Contains(venueScannerStatusAuthorizationQuery, roleScope) {
+				t.Errorf("read-only status authorization missing role/scope %q", roleScope)
+			}
 		}
 	}
 }

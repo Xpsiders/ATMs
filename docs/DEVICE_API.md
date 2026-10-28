@@ -3,9 +3,11 @@
 All device routes use device authentication, separate from user JWT
 authentication. Send `X-Device-Key` with the provisioned high-entropy key over
 HTTPS. The database stores only its SHA-256 hash; the plaintext key is returned
-only when a device is provisioned or its key is rotated. Key management routes
-are not yet implemented; provision keys through the trusted administrative
-process until that phase is delivered.
+only when a device is provisioned or its key is rotated. Scanner provisioning,
+listing, pairing-code reissue, key rotation, revocation, and enrolment are
+available only to institution administrators and platform administrators, and
+are always limited to the authenticated institution. Department administrators,
+faculty administrators, and lecturers cannot manage scanners.
 
 The server is the source of time. Do not require an RTC or use a device clock to
 decide whether a session is open. Sync NTP at boot for TLS certificate
@@ -20,6 +22,12 @@ open now or to calculate attendance lateness.
 
 Fetches the open session at this device's venue and the oldest pending
 enrolment task, if any.
+
+Authenticated venue-reader roles may inspect a venue's minimal scanner health via
+`GET /venues/{id}/scanner-status`. It returns only `status` (`online`,
+`offline`, or `no_scanner`) and `last_seen_at`; it never includes device
+identifiers, keys, pairing codes, or management actions. The endpoint is
+tenant-scoped and available to the institution's venue-reader roles.
 
 **Headers**
 

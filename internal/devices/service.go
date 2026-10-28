@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	// ErrDeviceScopeDenied is returned when the caller holds no administrator
-	// authority over the device's venue department.
+	// ErrDeviceScopeDenied is returned when the caller is not an institution or
+	// platform administrator for the target institution.
 	ErrDeviceScopeDenied = errors.New("caller cannot manage this device")
+	ErrVenueStatusDenied = errors.New("caller cannot read scanner status")
+	ErrVenueNotFound     = errors.New("venue not found")
 	// ErrInvalidDeviceRequest is returned for malformed provisioning input.
 	ErrInvalidDeviceRequest = errors.New("device request is invalid")
 	// ErrDeviceNotFound is returned when the device does not exist in the caller's
@@ -61,7 +63,13 @@ const (
 	StatusUnpaired = "unpaired"
 	StatusActive   = "active"
 	StatusRevoked  = "revoked"
+
+	ScannerOnline   = "online"
+	ScannerOffline  = "offline"
+	ScannerNoDevice = "no_scanner"
 )
+
+const ScannerManagementDeniedMessage = "Only institution administrators can manage scanners"
 
 // ProvisionInput is the request to register a new scanner.
 type ProvisionInput struct {
@@ -106,30 +114,44 @@ type ListFilter struct {
 	Offset int
 }
 
-// Repository performs the scoped, audited persistence for device management.
-// Every method except Pair enforces that the actor administers the device's
-// venue department and returns ErrDeviceScopeDenied otherwise.
+type ScannerSnapshot struct {
+	Exists     bool
+	LastSeenAt *time.Time
+}
+
+type VenueScannerStatus struct {
+	Status     string     `json:"status"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+}
+
+// Repository performs tenant-scoped, audited persistence for scanner
+// management and exposes a minimal read-only venue status.
 type Repository interface {
 	Provision(ctx context.Context, actor auth.Identity, input ProvisionInput, code PairingCode, now time.Time) (Device, error)
 	List(ctx context.Context, actor auth.Identity, filter ListFilter) ([]Device, error)
 	IssuePairingCode(ctx context.Context, actor auth.Identity, deviceID string, code PairingCode, now time.Time, rotate bool) error
 	Revoke(ctx context.Context, actor auth.Identity, deviceID string, now time.Time) error
 	EnqueueEnrolment(ctx context.Context, actor auth.Identity, deviceID, studentRecordID string, now time.Time) (Enrolment, error)
+	VenueScannerSnapshot(ctx context.Context, actor auth.Identity, venueID string) (ScannerSnapshot, error)
 	Pair(ctx context.Context, codeHash []byte, now time.Time) (Paired, error)
 }
 
 // Service validates input and delegates to the Repository.
 type Service struct {
-	repository Repository
-	clock      Clock
+	repository   Repository
+	clock        Clock
+	offlineAfter time.Duration
 }
 
 // NewService validates dependencies and builds the service.
-func NewService(repository Repository, clock Clock) (*Service, error) {
+func NewService(repository Repository, clock Clock, offlineAfter time.Duration) (*Service, error) {
 	if repository == nil || clock == nil {
 		return nil, errors.New("device repository and clock are required")
 	}
-	return &Service{repository: repository, clock: clock}, nil
+	if offlineAfter <= 0 {
+		return nil, errors.New("device offline threshold must be positive")
+	}
+	return &Service{repository: repository, clock: clock, offlineAfter: offlineAfter}, nil
 }
 
 // Provision registers a scanner for a venue and issues its first pairing code.
@@ -250,12 +272,42 @@ func (s *Service) newPairingCode(deviceID string) (PairingCode, error) {
 	return PairingCode{DeviceID: deviceID, Code: display, hash: hash}, nil
 }
 
-// scopeAllows reports whether any of the caller's role assignments grants write
-// authority over the device's venue scope target. It is the single source of
-// truth for device-management authorization and is shared by the Postgres store.
-func scopeAllows(assignments []rbac.Assignment, target rbac.Target) bool {
+func (s *Service) VenueStatus(ctx context.Context, actor auth.Identity, venueID string) (VenueScannerStatus, error) {
+	if actor.InstitutionID == "" || actor.UserID == "" {
+		return VenueScannerStatus{}, ErrInvalidDeviceRequest
+	}
+	if _, err := db.ParseUUID(venueID); err != nil {
+		return VenueScannerStatus{}, ErrVenueNotFound
+	}
+	snapshot, err := s.repository.VenueScannerSnapshot(ctx, actor, venueID)
+	if err != nil {
+		return VenueScannerStatus{}, err
+	}
+	status := VenueScannerStatus{Status: ScannerNoDevice}
+	if !snapshot.Exists {
+		return status, nil
+	}
+	status.Status = ScannerOffline
+	if snapshot.LastSeenAt != nil {
+		lastSeen := snapshot.LastSeenAt.UTC()
+		status.LastSeenAt = &lastSeen
+		if !lastSeen.Before(s.clock.Now().UTC().Add(-s.offlineAfter)) {
+			status.Status = ScannerOnline
+		}
+	}
+	return status, nil
+}
+
+// scannerAdminAllows is the single policy for scanner management.
+func scannerAdminAllows(assignments []rbac.Assignment, institutionID string) bool {
 	for _, assignment := range assignments {
-		if rbac.CanAccess(assignment, target, "", "write") {
+		if assignment.InstitutionID != institutionID {
+			continue
+		}
+		if assignment.Role == "institution_admin" && assignment.ScopeType == rbac.ScopeInstitution {
+			return true
+		}
+		if assignment.Role == "platform_admin" && assignment.ScopeType == rbac.ScopePlatform {
 			return true
 		}
 	}

@@ -10,11 +10,10 @@ organization/catalogue, registration, student and staff CSV import, scoped
 staff invitations and signup-request review, password reset, administrator role
 assignment, audited venue and academic management, queued email delivery,
 session reports, roster sheets, attendance overrides, student live classes,
-lecturer-visible offerings, and paginated venue listing. A development seed
-loader is available. The backend is still incomplete: database-backed
-verification, device-key management, aggregate reports, disputes, and several
-hardening requirements remain. Do not deploy this as a feature-ready
-attendance service.
+lecturer-visible offerings, venue listing, and scanner management. A development
+seed loader is available. The backend is still incomplete: database-backed
+verification, aggregate reports, disputes, and several hardening requirements
+remain. Do not deploy this as a feature-ready attendance service.
 
 ## Requirements
 
@@ -42,17 +41,24 @@ load the date-relative demo dataset. It includes one institution, two
 faculties, four departments and programmes, 60 courses and offerings across all
 registration modes (20 of them general-studies courses, spread over 100-500
 level), fourteen lecturers, 60 student records (40 claimed accounts) across
-100-500 level, four venues and scanners, weekly timetable entries, historical
-sessions, varied attendance evidence and overrides, and pending invitation,
-signup, and scanner-enrolment records.
+100-500 level, four venues and scanners, weekly timetable entries, nine closed
+historical sessions at LT 2, varied attendance evidence and overrides, and
+pending invitation, signup, and scanner-enrolment records. Every offering is
+linked to a lecturer from its course department as both coordinator and
+assigned lecturer, and every seeded lecturer can start at least one offering.
 
 **The seed leaves no open class, by design.** Starting one is the lecturer's
 job, and it is what gives a room its coordinates, so a pre-opened session would
 both pre-empt that and block the venue under the one-open-session-per-venue
-rule. One venue ("Innovation Lab") is seeded with no coordinates at all, so the
-first lecturer to start a class there exercises the capture. Rerunning the seed
-closes any session left open and releases stale student claims, so it converges
-on the dataset rather than failing. The seed prints a login
+rule. All four venues start without coordinates or a radius. The nine seeded
+sessions are historical and use LT 2 only. Each venue still has its own scanner
+and timetable entries for assigned offerings; the other venues simply have no
+seeded sessions occupying them. Lecturers can start their assigned offerings
+at the venues in those timetables. When a lecturer starts a class, the API can capture that lecturer
+device's location for the selected venue; denying location permission still
+allows the class to start without a geofence. Rerunning the seed closes any
+session left open and releases stale student claims, so it converges on the
+dataset rather than failing. The seed prints a login
 table and the unclaimed matric/email pairs. Use the institution UUID printed
 there for login. Newly created scanner keys and the pending invitation token
 are displayed only once; reruns preserve them. To recreate only the demo
@@ -119,42 +125,30 @@ teaches there. Every path audits `venue.location_captured`.
 and caps it at 2000 metres. An existing radius is never overwritten by a
 captured fix — a fix says where a room is, not how big it is.
 
-### Set demo seed venues to your location
+### Seed venue locations
 
-This applies to the demo seed data only. For real venues use the capture
-endpoint above. In Google Maps, right-click your physical position and copy the
-coordinates;
-enter latitude first and longitude second. Indoor browser location can be off
-by tens of metres, so a venue radius of 150–200 metres is a sensible starting
-point for check-in testing. The seed places two venues at or within 25 metres
-of the configured origin, leaves "Innovation Lab" with no coordinates so the
-lecturer-device capture can be exercised, and adds a fourth venue about 5 km
-away for testing `location_unverified`.
+Every seeded venue has NULL coordinates and radius; the seed does not use
+static origin environment variables. `POST /sessions` uses a lecturer's
+device fix with 100 m accuracy or better to set the venue centre when a class
+starts. If the browser denies location permission, the session still starts
+without a geofence.
 
-Set `SEED_ORIGIN_LAT`, `SEED_ORIGIN_LNG`, and optionally
-`SEED_VENUE_RADIUS_M` in the repository-root `.env` file (the radius defaults
-to 150 metres), then update seeded venues and open-session location snapshots
-without resetting other data:
+To clear locations captured by an earlier test run without reseeding the rest
+of the dataset, use the seed's `--update-venues` flag.
 
 ```powershell
 $env:DATABASE_URL = "postgres://attendance:attendance@localhost:5432/attendance?sslmode=disable"
-$env:SEED_ORIGIN_LAT = "LATITUDE_FROM_GOOGLE_MAPS"
-$env:SEED_ORIGIN_LNG = "LONGITUDE_FROM_GOOGLE_MAPS"
-$env:SEED_VENUE_RADIUS_M = "150"
 go run ./scripts/seed --update-venues
 ```
 
-With Compose, save the values in `.env` and run:
+With Compose, run:
 
 ```powershell
 docker compose run --rm seed seed --update-venues
 ```
 
-For a host Go run, use `make set-venue` instead of the Go command when GNU Make
-is installed. The command prints the origin and every seeded venue's coordinates.
-If the origin variables are unset, the seed uses placeholder coordinates and
-warns that check-ins from your actual location will be recorded as
-`location_unverified`.
+A normal seed run also resets the known fixture venues and historical session
+snapshots.
 
 ## When a student's location does not match the venue
 
@@ -195,8 +189,8 @@ on its own, or they can recalibrate it immediately with
 ## Commands
 
 `make build`, `make run`, `make test`, `make test-race`, `make fmt`, `make lint`,
-`make sqlc`, `make migrate-up`, `make migrate-down`, `make seed`, `make set-venue`,
-`make docker-up`, `make docker-down`, and `make openapi-lint`.
+`make sqlc`, `make migrate-up`, `make migrate-down`, `make seed`, `make docker-up`,
+`make docker-down`, and `make openapi-lint`.
 
 In Windows PowerShell, use the same `make` commands if GNU Make is installed;
 otherwise use the equivalent Go command, e.g. `go test ./...` and
@@ -261,13 +255,16 @@ rotate a key so the device must re-pair (`POST /devices/{id}/rotate-key`), or
 revoke a scanner (`DELETE /devices/{id}`), and list scanners with their status
 and health via `GET /devices`.
 
-Device management is allowed for administrators with authority over the venue's
-department (department admins in their department, faculty admins in their
-faculty, institution admins institution-wide) and for lecturers at venues they
-teach at — a lecturer who is assigned to an offering timetabled at a venue may
-provision, list, re-pair, rotate, revoke, and enrol students on scanners at that
-venue. Viewing the resulting attendance needs no device role: an assigned
-lecturer already sees their sessions' live counts, report, roster, and overrides.
+Only institution administrators and platform administrators may list or manage
+scanners in the authenticated institution, including provisioning, re-pairing,
+key rotation, revocation, and enrolment. Department administrators, faculty
+administrators, and lecturers receive 403 responses for all scanner management
+routes. `GET /venues` lists every venue in the institution for lecturers and
+administrators; `GET /venues/{id}/scanner-status` exposes only `status` and
+`last_seen_at` for an institution venue, with no scanner identifiers or secrets.
+The lecturer Live session page uses that read-only endpoint for its selected
+venue. Viewing attendance remains governed by offering/session access, not by
+scanner-management permissions.
 
 ## Identity and staff administration
 

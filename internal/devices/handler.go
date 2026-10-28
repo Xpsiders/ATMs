@@ -35,6 +35,7 @@ func (h *Handler) RegisterAdminRoutes(router chi.Router) {
 	router.Post("/devices/{id}/rotate-key", h.rotate)
 	router.Delete("/devices/{id}", h.revoke)
 	router.Post("/devices/{id}/enrolments", h.enqueueEnrolment)
+	router.Get("/venues/{id}/scanner-status", h.venueStatus)
 }
 
 // RegisterPairingRoutes mounts the unauthenticated device self-pairing route.
@@ -153,6 +154,25 @@ func (h *Handler) enqueueEnrolment(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, result)
 }
 
+func (h *Handler) venueStatus(w http.ResponseWriter, r *http.Request) {
+	actor, ok := h.actor(w, r)
+	if !ok {
+		return
+	}
+	status, err := h.service.VenueStatus(r.Context(), actor, chi.URLParam(r, "id"))
+	switch {
+	case errors.Is(err, ErrVenueStatusDenied):
+		httpx.WriteError(w, http.StatusForbidden, "venue_status_denied", "You cannot view scanner status for this venue", nil)
+	case errors.Is(err, ErrVenueNotFound):
+		httpx.WriteError(w, http.StatusNotFound, "venue_not_found", "Venue was not found in this institution", nil)
+	case err != nil:
+		slog.ErrorContext(r.Context(), "load venue scanner status failed", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to load venue scanner status", nil)
+	default:
+		httpx.WriteJSON(w, http.StatusOK, status)
+	}
+}
+
 func (h *Handler) pair(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		PairingCode string `json:"pairing_code" validate:"required"`
@@ -197,7 +217,7 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error, 
 	case errors.Is(err, ErrInvalidDeviceRequest):
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_request", "Device request fields are invalid", nil)
 	case errors.Is(err, ErrDeviceScopeDenied):
-		httpx.WriteError(w, http.StatusForbidden, "device_scope_denied", "You cannot manage devices in this scope", nil)
+		httpx.WriteError(w, http.StatusForbidden, "device_scope_denied", ScannerManagementDeniedMessage, nil)
 	case errors.Is(err, ErrDeviceNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "device_not_found", "Device not found in this institution", nil)
 	case errors.Is(err, ErrStudentNotFound):

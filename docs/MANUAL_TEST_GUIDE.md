@@ -28,39 +28,35 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    `--reset` to recreate only the demo institution). The command prints a
    table of login credentials and all unclaimed matric/email pairs. Its
    date-relative dataset includes two faculties, four departments/programmes,
-   ten courses and offerings across all four registration modes, 48 student
-   records, three lecturers or more, venues and timetable entries, open and
-   historical sessions, varied attendance evidence and overrides, plus
-   pending invitation, signup, and scanner-enrolment records. It prints
+   60 courses and offerings across all four registration modes, 60 student
+   records, fourteen lecturers, four venues and scanners, timetable entries,
+   nine closed sessions at LT 2, varied attendance evidence and overrides, plus
+   pending invitation, signup, and scanner-enrolment records. Every offering is
+   linked to its assigned lecturer, and every seeded lecturer can start at
+   least one offering. It prints
    plaintext scanner keys and the pending invitation token only when each is
    first created; save them securely, as a rerun does not reveal or rotate
    existing secrets. Use `make seed ARGS=--reset` or
    `go run ./scripts/seed --reset` only when you intend to delete and recreate
    the demo institution.
 
-   **Match venues to your test location.** In Google Maps, right-click your
-   physical position and copy the coordinates, with latitude first and
-   longitude second. Indoor browser location can be tens of metres off, so a
-   150–200 metre radius is a sensible starting point. Set the variables in
-   PowerShell, then update the seeded venues and open-session snapshots without
-   wiping data:
+   **Seed venue locations.** Every seeded venue has its own scanner and
+   timetable entries for assigned offerings, but starts without coordinates
+   or a radius. Only LT 2 has seeded historical sessions; the other venues
+   remain unoccupied, not disabled. No venue-origin environment variables are
+   needed. A lecturer can start an assigned offering at any venue. When they
+   start a class, the API can capture their device's location for the selected
+   venue; denying browser location still allows the session to start without a geofence. To
+   clear locations captured by an earlier test run without reseeding the rest
+   of the data, run:
 
    ```powershell
    $env:DATABASE_URL = "postgres://attendance:attendance@localhost:5432/attendance?sslmode=disable"
-   $env:SEED_ORIGIN_LAT = "LATITUDE_FROM_GOOGLE_MAPS"
-   $env:SEED_ORIGIN_LNG = "LONGITUDE_FROM_GOOGLE_MAPS"
-   $env:SEED_VENUE_RADIUS_M = "150"
    go run ./scripts/seed --update-venues
    ```
 
-   Or place those values in the repository-root `.env` file and run
-   `docker compose run --rm seed seed --update-venues`. When GNU Make is
-   installed, `make set-venue` runs the host Go command. The seed prints the
-   origin and every venue coordinate. Three venues are at/within 25 metres of
-   the origin; **Far Test Venue (5 km)** is intentionally about 5 km away.
-   With neither origin variable set, the seed uses placeholder coordinates and
-   warns that check-ins from your actual location will be recorded as
-   `location_unverified`.
+   Or run `docker compose run --rm seed seed --update-venues`. A regular seed
+   run also updates its known historical session fixtures.
 
    Start the API in a second CMD window with configured secrets:
 
@@ -224,10 +220,10 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    Expect `200` with `outcome`, the geofence in force afterwards, and
    `moved_meters`. Exercise each outcome: a point within 10 metres of the
    centre gives `unchanged`; a point 30–50 metres away (inside the radius)
-   gives `refined` and must also update the venue row; the coordinates of
-   **Far Test Venue (5 km)** give `rejected_distance` and must leave
-   `lecture_sessions.latitude` untouched; an `accuracy_meters` of `250` gives
-   `rejected_accuracy`. Against a session started at a venue whose
+   gives `refined` and must also update the venue row; a test coordinate at
+   least 1 km away from the session centre gives `rejected_distance` and must
+   leave `lecture_sessions.latitude` untouched; an `accuracy_meters` of `250`
+   gives `rejected_accuracy`. Against a session started at a venue whose
    `latitude`/`longitude`/`radius_meters` are NULL, a fix with good accuracy
    gives `established` and fills in both the session and the venue. Confirm an
    `audit_log` row with action `venue.location_captured` for each accepted fix,

@@ -230,7 +230,8 @@ func main() {
 		logger.Error("configure device management store", "error", err)
 		os.Exit(1)
 	}
-	deviceService, err := devices.NewService(deviceStore, systemClock)
+	deviceService, err := devices.NewService(deviceStore, systemClock,
+		time.Duration(cfg.DeviceOfflineSeconds)*time.Second)
 	if err != nil {
 		logger.Error("configure device management service", "error", err)
 		os.Exit(1)

@@ -606,7 +606,13 @@ ORDER BY ls.started_at DESC, ls.id;
 SELECT EXISTS (
     SELECT 1 FROM role_assignments
     WHERE institution_id = $1 AND user_id = $2
-      AND role IN ('platform_admin', 'institution_admin', 'faculty_admin', 'department_admin', 'lecturer')
+      AND (
+        (role = 'platform_admin' AND scope_type = 'platform')
+        OR (role = 'institution_admin' AND scope_type = 'institution')
+        OR (role = 'faculty_admin' AND scope_type = 'faculty')
+        OR (role = 'department_admin' AND scope_type = 'department')
+        OR (role = 'lecturer' AND scope_type = 'department')
+      )
 );
 
 -- name: ListVenues :many

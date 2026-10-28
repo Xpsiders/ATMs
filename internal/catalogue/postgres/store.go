@@ -44,6 +44,8 @@ type offeringSearchMetadata struct {
 	status    string
 }
 
+const institutionVenueFilter = "v.institution_id=$1"
+
 var resources = map[catalogue.Resource]resourceConfig{
 	catalogue.Institutions:     {"institutions", []string{"id", "name", "created_at"}},
 	catalogue.Faculties:        {"faculties", []string{"id", "name", "created_at"}},
@@ -197,25 +199,14 @@ func (s *Store) ListVenues(ctx context.Context, institutionIDText, userIDText st
 	if !allowed {
 		return nil, 0, catalogue.ErrForbidden
 	}
-	scope := `v.institution_id=$1 AND (
-		EXISTS(SELECT 1 FROM role_assignments ra WHERE ra.institution_id=$1 AND ra.user_id=$2
-			AND ((ra.role='lecturer' AND v.active) OR ra.role='platform_admin'))
-		OR (v.department_id IS NULL AND EXISTS(SELECT 1 FROM role_assignments ra
-			WHERE ra.institution_id=$1 AND ra.user_id=$2 AND ra.role='institution_admin' AND ra.scope_type='institution'))
-		OR EXISTS(SELECT 1 FROM departments d JOIN role_assignments ra ON ra.institution_id=d.institution_id
-			WHERE d.institution_id=v.institution_id AND d.id=v.department_id AND ra.institution_id=$1 AND ra.user_id=$2
-			AND ((ra.role='institution_admin' AND ra.scope_type='institution')
-				OR (ra.role='faculty_admin' AND ra.scope_type='faculty' AND ra.faculty_id=d.faculty_id)
-				OR (ra.role='department_admin' AND ra.scope_type='department' AND ra.department_id=d.id)))
-	)`
 	var total int64
-	err = s.pool.QueryRow(ctx, "SELECT count(*) FROM venues v WHERE "+scope, institutionID, userID).Scan(&total)
+	err = s.pool.QueryRow(ctx, "SELECT count(*) FROM venues v WHERE "+institutionVenueFilter, institutionID).Scan(&total)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count scoped institution venues: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT v.id::text,v.name,v.latitude,v.longitude,v.radius_meters,v.department_id::text,v.active
-		FROM venues v WHERE `+scope+` ORDER BY v.name,v.id LIMIT $3 OFFSET $4`,
-		institutionID, userID, limit, offset)
+		FROM venues v WHERE `+institutionVenueFilter+` ORDER BY v.name,v.id LIMIT $2 OFFSET $3`,
+		institutionID, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list scoped institution venues: %w", err)
 	}

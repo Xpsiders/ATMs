@@ -1,7 +1,6 @@
 package main
 
 import (
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -146,175 +145,66 @@ func TestSeedUsesHumanReadableUniqueNamesForStudentsAndLecturers(t *testing.T) {
 	}
 }
 
-func TestMetresToDegreeOffsetsAcrossLatitudes(t *testing.T) {
+func TestSeedVenuesStartUnlocatedAndSessionsStayAtPrimaryVenue(t *testing.T) {
 	t.Parallel()
-	for _, latitude := range []float64{0, 45, 80} {
-		north, east, err := metresToDegreeOffsets(latitude, 100, 100)
-		if err != nil {
-			t.Fatalf("latitude %v: %v", latitude, err)
-		}
-		if math.Abs(north*111320-100) > 0.001 {
-			t.Errorf("latitude %v: north offset represents %.3f m, want 100", latitude, north*111320)
-		}
-		eastMeters := east * 111320 * math.Cos(latitude*math.Pi/180)
-		if math.Abs(eastMeters-100) > 0.001 {
-			t.Errorf("latitude %v: east offset represents %.3f m, want 100", latitude, eastMeters)
-		}
-	}
-	if _, _, err := metresToDegreeOffsets(90.1, 0, 0); err == nil {
-		t.Fatal("expected invalid latitude to be rejected")
-	}
-}
-
-func TestLoadSeedConfigDefaultsParsesAndValidates(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		values  map[string]string
-		want    seedConfig
-		wantErr string
-	}{
-		{
-			name: "defaults",
-			want: seedConfig{originLatitude: defaultOriginLatitude, originLongitude: defaultOriginLongitude, venueRadius: defaultVenueRadius},
-		},
-		{
-			name: "configured",
-			values: map[string]string{
-				"SEED_ORIGIN_LAT": " -33.8688 ", "SEED_ORIGIN_LNG": "151.2093",
-				"SEED_VENUE_RADIUS_M": "200",
-			},
-			want: seedConfig{originLatitude: -33.8688, originLongitude: 151.2093, venueRadius: 200, originConfigured: true},
-		},
-		{
-			name: "valid boundaries",
-			values: map[string]string{
-				"SEED_ORIGIN_LAT": "-90", "SEED_ORIGIN_LNG": "180",
-				"SEED_VENUE_RADIUS_M": "20",
-			},
-			want: seedConfig{originLatitude: -90, originLongitude: 180, venueRadius: 20, originConfigured: true},
-		},
-		{
-			name: "valid upper radius",
-			values: map[string]string{
-				"SEED_ORIGIN_LAT": "90", "SEED_ORIGIN_LNG": "-180",
-				"SEED_VENUE_RADIUS_M": "2000",
-			},
-			want: seedConfig{originLatitude: 90, originLongitude: -180, venueRadius: 2000, originConfigured: true},
-		},
-		{name: "latitude out of range", values: map[string]string{"SEED_ORIGIN_LAT": "90.1", "SEED_ORIGIN_LNG": "0"}, wantErr: "SEED_ORIGIN_LAT"},
-		{name: "longitude out of range", values: map[string]string{"SEED_ORIGIN_LAT": "0", "SEED_ORIGIN_LNG": "-180.1"}, wantErr: "SEED_ORIGIN_LNG"},
-		{name: "invalid latitude", values: map[string]string{"SEED_ORIGIN_LAT": "north", "SEED_ORIGIN_LNG": "0"}, wantErr: "SEED_ORIGIN_LAT"},
-		{name: "partial origin", values: map[string]string{"SEED_ORIGIN_LAT": "1"}, wantErr: "must be set together"},
-		{name: "radius below range", values: map[string]string{"SEED_VENUE_RADIUS_M": "19"}, wantErr: "SEED_VENUE_RADIUS_M"},
-		{name: "radius above range", values: map[string]string{"SEED_VENUE_RADIUS_M": "2001"}, wantErr: "SEED_VENUE_RADIUS_M"},
-		{name: "invalid radius", values: map[string]string{"SEED_VENUE_RADIUS_M": "wide"}, wantErr: "SEED_VENUE_RADIUS_M"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			getenv := func(key string) string { return test.values[key] }
-			got, err := loadSeedConfig(getenv)
-			if test.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
-					t.Fatalf("loadSeedConfig error = %v, want substring %q", err, test.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != test.want {
-				t.Fatalf("loadSeedConfig = %+v, want %+v", got, test.want)
-			}
-		})
-	}
-}
-
-func TestSeedVenuePlacementAndOpenSessionSnapshotsUseConfiguredOrigin(t *testing.T) {
-	t.Parallel()
-	config := seedConfig{originLatitude: 6.5, originLongitude: 3.3, venueRadius: 200, originConfigured: true}
-	venues, err := placeSeedVenues(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(venues) != 4 {
-		t.Fatalf("venue count = %d, want 4", len(venues))
-	}
-	if venues[0].id != seedID(400) || venues[0].lat != config.originLatitude ||
-		venues[0].lng != config.originLongitude || venues[0].radius != config.venueRadius {
-		t.Fatalf("origin venue mismatch: %+v", venues[0])
-	}
-	for _, venue := range venues[1:3] {
-		// One of the near venues is deliberately uncalibrated: no coordinates
-		// and no radius, which is the normal starting state for a room now.
-		if !venue.located {
-			if venue.lat != 0 || venue.lng != 0 || venue.radius != 0 {
-				t.Errorf("venue %q has no location but carries coordinates: %+v", venue.name, venue)
-			}
-			continue
-		}
-		if distanceMeters(config.originLatitude, config.originLongitude, venue.lat, venue.lng) > 30 {
-			t.Errorf("near venue %q is not within 30m of configured origin", venue.name)
-		}
-		if venue.radius != config.venueRadius {
-			t.Errorf("near venue %q radius = %d, want %d", venue.name, venue.radius, config.venueRadius)
-		}
-	}
-	uncalibrated := 0
-	for _, venue := range venues {
-		if !venue.located {
-			uncalibrated++
-		}
-	}
-	if uncalibrated != 1 {
-		t.Errorf("venues with no location = %d, want exactly 1", uncalibrated)
-	}
-	farVenue := venues[3]
-	if farVenue.id != seedID(403) || farVenue.name != "Far Test Venue (5 km)" ||
-		math.Abs(distanceMeters(config.originLatitude, config.originLongitude, farVenue.lat, farVenue.lng)-5000) > 10 ||
-		farVenue.radius != 60 {
-		t.Fatalf("far venue mismatch: %+v", farVenue)
-	}
-
-	plan, err := buildSeedPlanWithConfig(
-		time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC), config)
+	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	venueByID := make(map[string]seedVenue, len(plan.venues))
+	scannerIDs := make(map[string]bool, len(plan.venues))
 	for _, venue := range plan.venues {
 		venueByID[venue.id] = venue
+		if venue.located || venue.lat != 0 || venue.lng != 0 || venue.radius != 0 {
+			t.Errorf("seed venue %q starts with a location or radius: %+v", venue.name, venue)
+		}
+		if venue.device == "" || scannerIDs[venue.device] {
+			t.Errorf("venue %q has missing or shared scanner ID %q", venue.name, venue.device)
+		}
+		scannerIDs[venue.device] = true
 	}
-	checked := 0
+	offeringByID := make(map[string]seedOffering, len(plan.offerings))
+	for _, offering := range plan.offerings {
+		offeringByID[offering.id] = offering
+	}
+	timetableByID := make(map[string]seedTimetable, len(plan.timetables))
+	venuesWithAssignedOffering := make(map[string]bool, len(plan.venues))
+	for _, timetable := range plan.timetables {
+		timetableByID[timetable.id] = timetable
+		if _, ok := offeringByID[timetable.offeringID]; !ok {
+			t.Errorf("timetable %s has missing offering %s", timetable.id, timetable.offeringID)
+		} else {
+			venuesWithAssignedOffering[timetable.venueID] = true
+		}
+		if _, ok := venueByID[timetable.venueID]; !ok {
+			t.Errorf("timetable %s has missing venue %s", timetable.id, timetable.venueID)
+		}
+	}
+	for _, venue := range plan.venues {
+		if !venuesWithAssignedOffering[venue.id] {
+			t.Errorf("venue %s has no timetable for an assigned offering", venue.id)
+		}
+	}
 	for _, session := range plan.sessions {
-		venue := venueByID[session.venueID]
-		if !venue.located {
-			if session.located || session.latitude != 0 || session.longitude != 0 || session.radius != 0 {
-				t.Errorf("session %s at uncalibrated venue %s carries a geofence: %+v",
-					session.id, venue.id, session)
-			}
-			continue
+		if session.venueID != plan.venues[0].id {
+			t.Errorf("seed session %s uses secondary venue %s, want primary %s",
+				session.id, session.venueID, plan.venues[0].id)
 		}
-		checked++
-		if !session.located || session.latitude != venue.lat ||
-			session.longitude != venue.lng || session.radius != venue.radius {
-			t.Errorf("session %s snapshot does not match venue %s: %+v / %+v",
-				session.id, venue.id, session, venue)
+		if session.located || session.latitude != 0 || session.longitude != 0 || session.radius != 0 {
+			t.Errorf("seed session %s has a location or radius: %+v", session.id, session)
+		}
+		timetable, ok := timetableByID[session.timetable]
+		if !ok || timetable.offeringID != session.offeringID || timetable.venueID != session.venueID {
+			t.Errorf("session %s is not linked to its matching timetable", session.id)
+		}
+		offering, ok := offeringByID[session.offeringID]
+		if !ok {
+			t.Errorf("session %s has missing offering %s", session.id, session.offeringID)
+		} else if session.lecturerID != offering.lecturerID {
+			t.Errorf("session %s lecturer %s does not match assigned lecturer %s",
+				session.id, session.lecturerID, offering.lecturerID)
 		}
 	}
-	if checked == 0 {
-		t.Fatal("seed has no located session to check")
-	}
-}
-
-func distanceMeters(firstLat, firstLng, secondLat, secondLng float64) float64 {
-	const earthRadiusMeters = 6371000
-	lat1, lat2 := firstLat*math.Pi/180, secondLat*math.Pi/180
-	dLat := (secondLat - firstLat) * math.Pi / 180
-	dLng := (secondLng - firstLng) * math.Pi / 180
-	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
-		math.Cos(lat1)*math.Cos(lat2)*math.Sin(dLng/2)*math.Sin(dLng/2)
-	return earthRadiusMeters * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
 func TestSeedPlanRegistrationModesAndStaffAssignments(t *testing.T) {
@@ -397,16 +287,23 @@ func TestSeedLecturersAreAssignedOnlyToTheirDepartmentCourses(t *testing.T) {
 		courseDepartments[course.id] = course.departmentID
 	}
 	lecturerDepartments := make(map[string]string)
+	assignedLecturers := make(map[string]bool)
 	for _, lecturer := range plan.users {
 		if lecturer.role == "lecturer" {
 			lecturerDepartments[lecturer.id] = lecturer.deptID
 		}
 	}
 	for _, offering := range plan.offerings {
+		assignedLecturers[offering.lecturerID] = true
 		if lecturerDepartments[offering.lecturerID] != courseDepartments[offering.courseID] {
 			t.Errorf("lecturer %s from department %s is assigned course %s owned by department %s",
 				offering.lecturerID, lecturerDepartments[offering.lecturerID],
 				offering.courseID, courseDepartments[offering.courseID])
+		}
+	}
+	for lecturerID := range lecturerDepartments {
+		if !assignedLecturers[lecturerID] {
+			t.Errorf("seed lecturer %s has no offering assignment and cannot start a seeded class", lecturerID)
 		}
 	}
 }
@@ -692,11 +589,9 @@ func TestSeedPlanProvidesPriorAndCurrentSemesters(t *testing.T) {
 	}
 }
 
-// The seeded check-ins have to cover what the new check-in rules can produce:
-// a position inside the room, a position the phone's own accuracy cannot
-// explain, and no position at all. Every row needs a device hash, because
-// device binding is what now stops one handset checking in a row of friends.
-func TestSeedWebCheckinsCoverOptionalLocationAndDeviceBinding(t *testing.T) {
+// Seeded venues and historical session snapshots stay unlocated so the first
+// live class at each venue can capture the lecturer's device location.
+func TestSeedCheckinsDoNotInventLocationAndUseDeviceBinding(t *testing.T) {
 	t.Parallel()
 	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
 	if err != nil {
@@ -705,7 +600,7 @@ func TestSeedWebCheckinsCoverOptionalLocationAndDeviceBinding(t *testing.T) {
 	if len(plan.webCheckins) == 0 {
 		t.Fatal("seed has no web check-ins")
 	}
-	withPosition, withoutPosition, unexplained := 0, 0, 0
+	withoutPosition := 0
 	for _, checkin := range plan.webCheckins {
 		session := sessionByID(plan.sessions, checkin.sessionID)
 		if session.id == "" {
@@ -713,37 +608,13 @@ func TestSeedWebCheckinsCoverOptionalLocationAndDeviceBinding(t *testing.T) {
 		}
 		if checkin.position == nil {
 			withoutPosition++
-			if session.located {
-				continue
-			}
 			continue
 		}
-		withPosition++
-		if !session.located {
-			t.Errorf("check-in on session %s has a position but the session has no geofence",
-				session.id)
-		}
-		if checkin.position.accuracy < 0 || checkin.position.distance < 0 {
-			t.Errorf("check-in on session %s has a negative fix: %+v", session.id, checkin.position)
-		}
-		// The service flags a fix only when the reported accuracy, capped at
-		// 250 m, cannot cover the gap past the radius.
-		allowance := checkin.position.accuracy
-		if allowance > 250 {
-			allowance = 250
-		}
-		if checkin.position.distance > float64(session.radius)+allowance {
-			unexplained++
-		}
-	}
-	if withPosition == 0 {
-		t.Error("no check-in carries a position")
+		t.Errorf("seed check-in for session %s has a fabricated location: %+v",
+			session.id, checkin.position)
 	}
 	if withoutPosition == 0 {
 		t.Error("no check-in was recorded without a position; a denied permission must still be demo-able")
-	}
-	if unexplained == 0 {
-		t.Error("no check-in is flagged location_unverified, so the report's review state has no example")
 	}
 	hashes := make(map[string]bool, len(plan.webCheckins))
 	for _, checkin := range plan.webCheckins {

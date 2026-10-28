@@ -455,7 +455,7 @@ paths:
     get:
       operationId: listVenues
       summary: List venues in the authenticated user's institution
-      description: Accessible only to lecturers and platform, institution, faculty, or department administrators. Venue results never cross the authenticated institution.
+      description: Lecturers, department administrators, faculty administrators, institution administrators, and platform administrators see every venue in their authenticated institution. Results never cross institutions.
       security:
         - BearerAuth: []
       parameters:
@@ -495,13 +495,46 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Caller is not a lecturer or administrator.
+          description: Caller does not have a venue-listing role.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
+  /venues/{id}/scanner-status:
+    get:
+      operationId: getVenueScannerStatus
+      summary: Get the read-only scanner status for a venue
+      description: >-
+        Returns only the venue scanner status and most recent last-seen time.
+        Status values are online, offline, or no_scanner; clients may display
+        them as "Scanner online", "Scanner offline", or "No scanner at this
+        venue". A scanner is online when its last-seen time is within
+        DEVICE_OFFLINE_SECONDS. Never returns scanner keys, pairing codes, or
+        management actions.
+      security: [{BearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Read-only scanner status with no management data.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, last_seen_at]
+                additionalProperties: false
+                properties:
+                  status: {type: string, enum: [online, offline, no_scanner]}
+                  last_seen_at: {type: [string, "null"], format: date-time}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller does not have a venue-listing role., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "404": {description: Venue not found in this institution., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
     post:
       operationId: createVenue
       summary: Create an institution venue
@@ -1177,9 +1210,9 @@ paths:
       description: >-
         Registers a scanner for a venue and returns a short pairing code to flash
         into the device firmware. The code is shown once; the firmware redeems it
-        at POST /device/pair to receive its permanent device key. Allowed for
-        administrators with authority over the venue's department, or for a
-        lecturer who teaches at the venue.
+        at POST /device/pair to receive its permanent device key. Only an
+        institution administrator or platform administrator may manage scanners
+        in this institution.
       security:
         - BearerAuth: []
       requestBody:
@@ -1192,12 +1225,12 @@ paths:
         "201": {description: Scanner provisioned; pairing code shown once., content: {application/json: {schema: {$ref: "#/components/schemas/ProvisionedDevice"}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage devices in this scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
     get:
       operationId: listDevices
-      summary: List scanners within the caller's scope
-      description: Returns scanners the caller may manage - within an administrator's department/faculty/institution authority, plus venues a lecturer teaches at.
+      summary: List scanners in the authenticated institution
+      description: Only an institution administrator or platform administrator may list scanners. Results are tenant-scoped and include management status.
       security:
         - BearerAuth: []
       parameters:
@@ -1218,13 +1251,13 @@ paths:
                   has_more: {type: boolean}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage devices in this scope., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /devices/{id}/pairing-code:
     post:
       operationId: regenerateDevicePairingCode
       summary: Issue a fresh pairing code for a scanner
-      description: Replaces any outstanding pairing code without changing an already-paired key. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      description: Replaces any outstanding pairing code without changing an already-paired key. Only institution and platform administrators can manage scanners in their institution.
       security:
         - BearerAuth: []
       parameters:
@@ -1232,14 +1265,14 @@ paths:
       responses:
         "201": {description: New pairing code shown once., content: {application/json: {schema: {$ref: "#/components/schemas/PairingCode"}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Device not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /devices/{id}/rotate-key:
     post:
       operationId: rotateDeviceKey
       summary: Invalidate a scanner's key and issue a new pairing code
-      description: Clears the current device key so the scanner must re-pair with the returned code before it can send data again. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      description: Clears the current device key so the scanner must re-pair with the returned code before it can send data again. Only institution and platform administrators can manage scanners in their institution.
       security:
         - BearerAuth: []
       parameters:
@@ -1247,14 +1280,14 @@ paths:
       responses:
         "201": {description: Key rotated; new pairing code shown once., content: {application/json: {schema: {$ref: "#/components/schemas/PairingCode"}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Device not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /devices/{id}:
     delete:
       operationId: revokeDevice
       summary: Revoke (soft-disable) a scanner
-      description: Disables the scanner so its key is rejected immediately. The record is retained for audit and reporting. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      description: Disables the scanner so its key is rejected immediately. The record is retained for audit and reporting. Only institution and platform administrators can manage scanners in their institution.
       security:
         - BearerAuth: []
       parameters:
@@ -1262,14 +1295,14 @@ paths:
       responses:
         "204": {description: Device revoked.}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Device not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /devices/{id}/enrolments:
     post:
       operationId: enqueueDeviceEnrolment
       summary: Queue a student for fingerprint enrolment on a scanner
-      description: Assigns the next device slot to the student and creates a pending enrolment task the scanner picks up from GET /device/tasks. Allowed for administrators over the venue's department or a lecturer who teaches at the venue.
+      description: Assigns the next device slot to the student and creates a pending enrolment task the scanner picks up from GET /device/tasks. Only institution and platform administrators can manage scanners in their institution.
       security:
         - BearerAuth: []
       parameters:
@@ -1288,7 +1321,7 @@ paths:
         "201": {description: Enrolment queued., content: {application/json: {schema: {$ref: "#/components/schemas/EnrolmentEnqueueResponse"}}}}
         "400": {$ref: "#/components/responses/InvalidJSON"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage this device., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Device or student record not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /signup-requests:

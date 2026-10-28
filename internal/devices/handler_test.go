@@ -12,6 +12,10 @@ import (
 )
 
 func newRouter(t *testing.T, repo Repository) http.Handler {
+	return newRouterWithActor(t, repo, actor())
+}
+
+func newRouterWithActor(t *testing.T, repo Repository, identity auth.Identity) http.Handler {
 	t.Helper()
 	handler, err := NewHandler(newService(t, repo))
 	if err != nil {
@@ -21,7 +25,7 @@ func newRouter(t *testing.T, repo Repository) http.Handler {
 	router.Group(func(authed chi.Router) {
 		authed.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				ctx := auth.WithPrincipal(r.Context(), auth.Principal{Identity: actor()})
+				ctx := auth.WithPrincipal(r.Context(), auth.Principal{Identity: identity})
 				next.ServeHTTP(w, r.WithContext(ctx))
 			})
 		})
@@ -31,12 +35,17 @@ func newRouter(t *testing.T, repo Repository) http.Handler {
 	return router
 }
 
+func request(t *testing.T, router http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	router.ServeHTTP(recorder, req)
+	return recorder
+}
+
 func post(t *testing.T, router http.Handler, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	return response
+	return request(t, router, http.MethodPost, path, body)
 }
 
 func TestProvisionReturnsPairingCodeOnce(t *testing.T) {
@@ -69,8 +78,87 @@ func TestProvisionScopeDeniedMapsTo403(t *testing.T) {
 	t.Parallel()
 	router := newRouter(t, &fakeRepo{err: ErrDeviceScopeDenied})
 	response := post(t, router, "/devices", `{"venue_id":"`+testVenue+`","name":"Lab Scanner"}`)
-	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"device_scope_denied"`) {
+	if response.Code != http.StatusForbidden ||
+		!strings.Contains(response.Body.String(), `"code":"device_scope_denied"`) ||
+		!strings.Contains(response.Body.String(), ScannerManagementDeniedMessage) {
 		t.Fatalf("scope-denied response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestScannerManagementEndpointsAreInstitutionAdminOnly(t *testing.T) {
+	t.Parallel()
+	endpoints := []struct {
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{http.MethodGet, "/devices", "", http.StatusOK},
+		{http.MethodPost, "/devices", `{"venue_id":"` + testVenue + `","name":"Lab Scanner"}`, http.StatusCreated},
+		{http.MethodPost, "/devices/" + testDevice + "/pairing-code", "", http.StatusCreated},
+		{http.MethodPost, "/devices/" + testDevice + "/rotate-key", "", http.StatusCreated},
+		{http.MethodDelete, "/devices/" + testDevice, "", http.StatusNoContent},
+		{http.MethodPost, "/devices/" + testDevice + "/enrolments", `{"student_record_id":"` + testStudent + `"}`, http.StatusCreated},
+	}
+	roles := []string{"lecturer", "department_admin", "faculty_admin", "institution_admin", "platform_admin"}
+	for _, endpoint := range endpoints {
+		for _, role := range roles {
+			t.Run(endpoint.method+" "+endpoint.path+" "+role, func(t *testing.T) {
+				response := request(t, newRouterWithActor(t, &fakeRepo{}, roleActor(role)),
+					endpoint.method, endpoint.path, endpoint.body)
+				if role == "lecturer" || role == "department_admin" || role == "faculty_admin" {
+					if response.Code != http.StatusForbidden ||
+						!strings.Contains(response.Body.String(), ScannerManagementDeniedMessage) {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body)
+					}
+					return
+				}
+				if response.Code != endpoint.want {
+					t.Fatalf("status=%d want=%d body=%s", response.Code, endpoint.want, response.Body)
+				}
+			})
+		}
+	}
+}
+
+func TestVenueScannerStatusIsReadOnlyAndAvailableToTeachingRoles(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"lecturer", "department_admin", "faculty_admin", "institution_admin", "platform_admin"} {
+		t.Run(role, func(t *testing.T) {
+			response := request(t, newRouterWithActor(t, &fakeRepo{}, roleActor(role)),
+				http.MethodGet, "/venues/"+testVenue+"/scanner-status", "")
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body)
+			}
+			body := response.Body.String()
+			if !strings.Contains(body, `"status":"online"`) || !strings.Contains(body, `"last_seen_at"`) {
+				t.Fatalf("missing scanner status fields: %s", body)
+			}
+			for _, secret := range []string{"device_key", "pairing_code", "key_hash", "actions"} {
+				if strings.Contains(body, secret) {
+					t.Fatalf("status response exposed %q: %s", secret, body)
+				}
+			}
+		})
+	}
+}
+
+func TestVenueScannerStatusRejectsUnknownRoleAndForeignTenantVenue(t *testing.T) {
+	t.Parallel()
+	repo := &fakeRepo{err: ErrVenueNotFound}
+	response := request(t, newRouterWithActor(t, repo, auth.Identity{
+		InstitutionID: testInstitution, UserID: "student-" + testUser,
+	}), http.MethodGet, "/venues/"+testVenue+"/scanner-status", "")
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("unknown-role status=%d body=%s", response.Code, response.Body)
+	}
+
+	repo = &fakeRepo{err: ErrVenueNotFound}
+	response = request(t, newRouter(t, repo), http.MethodGet,
+		"/venues/99999999-9999-4999-8999-999999999999/scanner-status", "")
+	if response.Code != http.StatusNotFound ||
+		!strings.Contains(response.Body.String(), `"code":"venue_not_found"`) {
+		t.Fatalf("foreign-tenant venue status=%d body=%s", response.Code, response.Body)
 	}
 }
 

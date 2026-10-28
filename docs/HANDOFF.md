@@ -32,15 +32,20 @@ that every phase or database-backed behavior is complete. See
   spanning all registration modes - the ten hand-written ones plus fifty more,
   twenty of them general-studies, over 200-500 level and shared across all
   fourteen lecturers - fourteen lecturer accounts/staff records, 60 students
-  (40 claimed) across 100-500 level, four venues/scanners of which one has no
-  coordinates, weekly timetables, nine historical sessions and no open ones,
+  (40 claimed) across 100-500 level, four venues/scanners, all without seeded
+  coordinates, weekly timetables at every venue, nine historical sessions at
+  LT 2 and no sessions at the other venues or open ones; every venue has its
+  own scanner and remains usable for a lecturer's assigned offering,
   registrations, and varied attendance/check-in/scan/override states including
-  a check-in with no position and one flagged location_unverified.
+  check-ins with no position (the uncalibrated seed intentionally has no
+  fabricated device locations).
   It also creates pending invitation, signup, and scanner-enrolment records.
   Credentials and unclaimed matric/email pairs are printed; new scanner keys
-  and the invitation token appear only on first creation. `--reset` is scoped
-  to the demo institution. Deterministic fixture tests pass; execution against
-  PostgreSQL remains outstanding.
+  and the invitation token appear only on first creation. Every offering is
+  written as both coordinator and assigned lecturer, and every seeded lecturer
+  has at least one offering. `--reset` is scoped to the demo institution.
+  Deterministic fixture tests cover those links; execution of the current seed
+  changes against PostgreSQL remains outstanding.
 - Student CSV preview and commit:
   - `POST /imports/students/preview` parses and validates rows without writes.
   - `POST /imports/students` revalidates and commits all rows in one

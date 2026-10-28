@@ -38,9 +38,6 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-attendance}:${POSTGRES_PASSWORD:-attendance}@postgres:5432/${POSTGRES_DB:-attendance}?sslmode=disable
       TZ: Africa/Lagos
-      SEED_ORIGIN_LAT: ${SEED_ORIGIN_LAT:-}
-      SEED_ORIGIN_LNG: ${SEED_ORIGIN_LNG:-}
-      SEED_VENUE_RADIUS_M: ${SEED_VENUE_RADIUS_M:-150}
     command: ["sh", "-c", "seed || echo 'SEED DID NOT COMPLETE: it may already be loaded. Read the messages above.'"]
     depends_on:
       migrate:

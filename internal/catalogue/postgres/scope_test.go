@@ -80,3 +80,10 @@ func TestSharedCalendarRequiresAuthenticatedTenantIdentity(t *testing.T) {
 		t.Fatal("unknown resource scope was accepted")
 	}
 }
+
+func TestVenueListUsesTenantOnlyFilter(t *testing.T) {
+	t.Parallel()
+	if institutionVenueFilter != "v.institution_id=$1" {
+		t.Fatalf("venue list filter = %q, want every venue in the tenant", institutionVenueFilter)
+	}
+}
