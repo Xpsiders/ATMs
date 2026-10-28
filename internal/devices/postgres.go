@@ -72,7 +72,17 @@ const (
 			AND d.disabled_at IS NULL
 		WHERE v.institution_id=$1 AND v.id=$2
 		GROUP BY v.id`
+	resolveEnrolmentStudentQuery = `SELECT id
+		FROM student_records
+		WHERE institution_id=$1 AND (id=$2 OR claimed_by_user_id=$2)
+		ORDER BY (id=$2) DESC
+		LIMIT 1`
+	findDeviceStudentSlotQuery = `SELECT id, slot_number
+		FROM device_slots
+		WHERE institution_id=$1 AND device_id=$2 AND student_record_id=$3`
 )
+
+const maxDeviceSlotNumber = 300
 
 func (s *PostgresStore) Provision(ctx context.Context, actor auth.Identity, input ProvisionInput, code PairingCode, now time.Time) (Device, error) {
 	tenant, actorID, err := parseActor(actor)
@@ -306,24 +316,34 @@ func (s *PostgresStore) EnqueueEnrolment(ctx context.Context, actor auth.Identit
 	if err := s.lockDeviceScope(ctx, tx, tenant, actorID, actor.InstitutionID, deviceID, id); err != nil {
 		return Enrolment{}, err
 	}
-	var exists int
-	err = tx.QueryRow(ctx, `SELECT 1 FROM student_records WHERE institution_id=$1 AND id=$2`,
-		tenant, studentID).Scan(&exists)
+	err = tx.QueryRow(ctx, resolveEnrolmentStudentQuery, tenant, studentID).Scan(&studentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Enrolment{}, ErrStudentNotFound
 	}
 	if err != nil {
 		return Enrolment{}, fmt.Errorf("resolve enrolment student: %w", err)
 	}
-	var slotNumber int
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(slot_number),0)+1 FROM device_slots
-		WHERE institution_id=$1 AND device_id=$2`, tenant, id).Scan(&slotNumber); err != nil {
-		return Enrolment{}, fmt.Errorf("resolve next device slot: %w", err)
-	}
 	var slotID pgtype.UUID
-	if err := tx.QueryRow(ctx, `INSERT INTO device_slots(institution_id,device_id,student_record_id,slot_number)
-		VALUES($1,$2,$3,$4) RETURNING id`, tenant, id, studentID, slotNumber).Scan(&slotID); err != nil {
-		return Enrolment{}, fmt.Errorf("insert device slot: %w", err)
+	var slotNumber int
+	err = tx.QueryRow(ctx, findDeviceStudentSlotQuery, tenant, id, studentID).Scan(&slotID, &slotNumber)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var maxSlotNumber int
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(slot_number),0) FROM device_slots
+			WHERE institution_id=$1 AND device_id=$2`, tenant, id).Scan(&maxSlotNumber); err != nil {
+			return Enrolment{}, fmt.Errorf("resolve maximum device slot: %w", err)
+		}
+		slotNumber, err = nextDeviceSlotNumber(maxSlotNumber)
+		if err != nil {
+			return Enrolment{}, err
+		}
+		if err := tx.QueryRow(ctx, `INSERT INTO device_slots(institution_id,device_id,student_record_id,slot_number)
+			VALUES($1,$2,$3,$4) RETURNING id`, tenant, id, studentID, slotNumber).Scan(&slotID); err != nil {
+			return Enrolment{}, fmt.Errorf("insert device slot: %w", err)
+		}
+	} else if err != nil {
+		return Enrolment{}, fmt.Errorf("resolve existing device slot: %w", err)
+	} else if slotNumber < 1 || slotNumber > maxDeviceSlotNumber {
+		return Enrolment{}, ErrDeviceSlotCapacity
 	}
 	var taskID pgtype.UUID
 	if err := tx.QueryRow(ctx, `INSERT INTO enrolment_tasks(institution_id,device_id,student_record_id,slot_id,status)
@@ -331,13 +351,20 @@ func (s *PostgresStore) EnqueueEnrolment(ctx context.Context, actor auth.Identit
 		return Enrolment{}, fmt.Errorf("insert enrolment task: %w", err)
 	}
 	if err := writeAudit(ctx, tx, tenant, actorID, "device.enrolment_queued", deviceID,
-		map[string]any{"student_record_id": studentRecordID, "slot_number": slotNumber}); err != nil {
+		map[string]any{"student_record_id": studentID.String(), "slot_number": slotNumber}); err != nil {
 		return Enrolment{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Enrolment{}, fmt.Errorf("commit enrolment enqueue: %w", err)
 	}
 	return Enrolment{TaskID: taskID.String(), SlotNumber: slotNumber, Status: "pending"}, nil
+}
+
+func nextDeviceSlotNumber(maxSlotNumber int) (int, error) {
+	if maxSlotNumber < 0 || maxSlotNumber >= maxDeviceSlotNumber {
+		return 0, ErrDeviceSlotCapacity
+	}
+	return maxSlotNumber + 1, nil
 }
 
 func (s *PostgresStore) Pair(ctx context.Context, codeHash []byte, now time.Time) (Paired, error) {

@@ -224,6 +224,12 @@ func (s *Store) LoadTasks(ctx context.Context, institutionIDText, deviceIDText s
 			}
 		}
 	}
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(string_agg(id::text, ',' ORDER BY id), '')
+		FROM enrolment_tasks
+		WHERE institution_id=$1 AND device_id=$2 AND status='pending'`,
+		institutionID, deviceID).Scan(&tasks.EnrolmentQueueRevision); err != nil {
+		return scans.Tasks{}, fmt.Errorf("load pending enrolment queue revision: %w", err)
+	}
 	return tasks, nil
 }
 

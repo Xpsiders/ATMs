@@ -1302,7 +1302,12 @@ paths:
     post:
       operationId: enqueueDeviceEnrolment
       summary: Queue a student for fingerprint enrolment on a scanner
-      description: Assigns the next device slot to the student and creates a pending enrolment task the scanner picks up from GET /device/tasks. Only institution and platform administrators can manage scanners in their institution.
+      description: >-
+        Assigns the next device slot to the student and creates a pending
+        enrolment task the scanner picks up from GET /device/tasks. The
+        student_record_id may be the student-record UUID or the UUID of its
+        claimed student account. Only institution and platform administrators
+        can manage scanners in their institution.
       security:
         - BearerAuth: []
       parameters:
@@ -1323,6 +1328,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Only institution administrators can manage scanners., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Device or student record not found., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "409": {description: Scanner has no available fingerprint slots., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /signup-requests:
     get:

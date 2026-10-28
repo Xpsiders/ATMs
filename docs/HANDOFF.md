@@ -24,6 +24,17 @@ that every phase or database-backed behavior is complete. See
 
 ## Implemented and verified work
 
+- Scanner enrolment lookup accepts either the student-record UUID or the
+  claimed account UUID emitted by the admin directory picker, resolves it to
+  the student record within the caller's institution, and still returns
+  `student_not_found` for unknown IDs. PostgreSQL inspection confirmed the
+  seeded Amara profile/account link and all 60 seed records (40 claimed, 20
+  unclaimed); live enqueue was intentionally not performed because it would
+  dispatch an enrolment to the paired scanner. The queue stays within the
+  firmware's 1-300 slot range, and ETag tests cover queued-enrolment changes.
+- Fixed-code session audit details are JSON-marshalled and sent as text cast to
+  JSONB, avoiding pgx `[]byte`/bytea encoding. A deterministic unit test checks
+  the audit payload is valid JSON.
 - Catalogue/offering resource-scope filtering and destination checks, with
   related RBAC tests and documentation.
 - A transactional, repeatable, date-relative `scripts/seed` dataset with two
@@ -143,7 +154,10 @@ that every phase or database-backed behavior is complete. See
   `DELETE /devices/{id}` soft-revokes (the key is rejected immediately), and
   `GET /devices` lists scoped scanners with status and health. `POST
   /devices/{id}/enrolments` queues a student onto the next device slot and a
-  pending enrolment task (previously only the seed created tasks). The new
+  pending enrolment task. Seeded students are no longer preloaded into scanner
+  slots or pending tasks; rerunning the seed removes old deterministic seeded
+  slots and their linked enrolment tasks so admins can enrol each student
+  manually. The new
   migration `00006_device_management.sql` makes `devices.key_hash` nullable, adds
   telemetry columns, and adds the `device_pairing_codes` table. Authorization
   reuses the `rbac.CanAccess` venue-department pattern and additionally allows a

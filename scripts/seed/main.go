@@ -240,13 +240,6 @@ type seedHeartbeat struct {
 	at       time.Time
 }
 
-type seedDeviceSlot struct {
-	id        string
-	deviceID  string
-	studentID string
-	number    int
-}
-
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -1157,21 +1150,8 @@ RETURNING id::text`, venue.device, institutionID, venue.id,
 			return nil, false, fmt.Errorf("seed scanner at %s: %w", venue.name, err)
 		}
 	}
-	for venueIndex, venue := range plan.venues {
-		for studentIndex, student := range plan.students {
-			slot := seedDeviceSlot{
-				id: seedID(1000 + venueIndex*100 + studentIndex + 1), deviceID: venue.device,
-				studentID: student.id, number: studentIndex + 1,
-			}
-			if err := execSeed(ctx, tx, "device slot "+slot.id, `
-INSERT INTO device_slots(id,institution_id,device_id,student_record_id,slot_number)
-VALUES($1,$2,$3,$4,$5)
-ON CONFLICT(institution_id,device_id,slot_number) DO UPDATE SET
-id=EXCLUDED.id,student_record_id=EXCLUDED.student_record_id`,
-				slot.id, institutionID, slot.deviceID, slot.studentID, slot.number); err != nil {
-				return nil, false, err
-			}
-		}
+	if err := clearSeedDeviceSlots(ctx, tx, plan); err != nil {
+		return nil, false, err
 	}
 	if err := seedAttendanceRows(ctx, tx, plan); err != nil {
 		return nil, false, err
@@ -1291,18 +1271,6 @@ WHERE signup_requests.status='pending'`,
 		seedID(801), institutionID, plan.now, plan.departments[0].id); err != nil {
 		return false, err
 	}
-	for venueIndex, venue := range plan.venues {
-		student := firstStudent(plan.students)
-		slotNumber := studentIndex(plan.students, student.id) + 1
-		slot := seedID(1000 + venueIndex*100 + slotNumber)
-		if err := execSeed(ctx, tx, "pending device enrolment "+venue.name, `
-INSERT INTO enrolment_tasks(id,institution_id,device_id,student_record_id,slot_id,status,created_at,completed_at)
-VALUES($1,$2,$3,$4,$5,'pending',$6,NULL)
-ON CONFLICT(id) DO NOTHING`,
-			seedID(810+venueIndex), institutionID, venue.device, student.id, slot, plan.now); err != nil {
-			return false, err
-		}
-	}
 	for _, session := range plan.sessions {
 		if session.endedAt == nil && session.venueID == plan.venues[1].id {
 			note := "Scanner offline for maintenance"
@@ -1328,6 +1296,35 @@ WHERE NOT EXISTS (
 	}
 	return invitationCreated, nil
 }
+
+func clearSeedDeviceSlots(ctx context.Context, tx pgx.Tx, plan seedPlan) error {
+	// Remove only deterministic demo slots; manually enrolled slots are preserved.
+	for venueIndex := range plan.venues {
+		for studentIndex := range plan.students {
+			slotID := seededDeviceSlotID(venueIndex, studentIndex)
+			if _, err := tx.Exec(ctx, deleteSeedSlotTasksQuery,
+				institutionID, slotID); err != nil {
+				return fmt.Errorf("remove seeded enrolment tasks for slot %s: %w", slotID, err)
+			}
+			if _, err := tx.Exec(ctx, deleteSeedSlotQuery,
+				institutionID, slotID); err != nil {
+				return fmt.Errorf("remove seeded device slot %s: %w", slotID, err)
+			}
+		}
+	}
+	return nil
+}
+
+func seededDeviceSlotID(venueIndex, studentIndex int) string {
+	return seedID(1000 + venueIndex*100 + studentIndex + 1)
+}
+
+const (
+	deleteSeedSlotTasksQuery = `DELETE FROM enrolment_tasks
+		WHERE institution_id=$1 AND slot_id=$2`
+	deleteSeedSlotQuery = `DELETE FROM device_slots
+		WHERE institution_id=$1 AND id=$2`
+)
 
 func resetDemoInstitution(ctx context.Context, tx pgx.Tx) error {
 	tables := []string{

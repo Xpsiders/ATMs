@@ -29,6 +29,9 @@ var (
 	// ErrStudentNotFound is returned when an enrolment target is not a student
 	// record in the caller's institution.
 	ErrStudentNotFound = errors.New("student record not found")
+	// ErrDeviceSlotCapacity is returned before an enrolment would exceed the
+	// scanner firmware's maximum supported slot number.
+	ErrDeviceSlotCapacity = errors.New("device slot capacity reached")
 )
 
 // pairingCodeTTL is how long a freshly issued pairing code remains redeemable.

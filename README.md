@@ -63,6 +63,10 @@ table and the unclaimed matric/email pairs. Use the institution UUID printed
 there for login. Newly created scanner keys and the pending invitation token
 are displayed only once; reruns preserve them. To recreate only the demo
 institution and generate new keys, run `make seed ARGS=--reset`.
+Seeded students are not pre-enrolled on scanners and no enrolment tasks are
+queued for them. A normal `make seed` also removes the old deterministic demo
+slots and their linked tasks, while preserving slots created manually by an
+administrator; each student can then be enrolled through scanner management.
 
 ### A venue's location comes from the lecturer's device
 

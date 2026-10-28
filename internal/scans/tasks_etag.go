@@ -8,9 +8,10 @@ import (
 )
 
 type Tasks struct {
-	ActiveSession    *ActiveSession `json:"active_session"`
-	PendingEnrolment *Enrolment     `json:"pending_enrolment"`
-	ServerTime       string         `json:"server_time"`
+	ActiveSession          *ActiveSession `json:"active_session"`
+	PendingEnrolment       *Enrolment     `json:"pending_enrolment"`
+	ServerTime             string         `json:"server_time"`
+	EnrolmentQueueRevision string         `json:"-"`
 }
 
 type ActiveSession struct {
@@ -29,7 +30,8 @@ func TasksETag(tasks Tasks) (string, error) {
 	payload := struct {
 		ActiveSession    *ActiveSession `json:"active_session"`
 		PendingEnrolment *Enrolment     `json:"pending_enrolment"`
-	}{tasks.ActiveSession, tasks.PendingEnrolment}
+		QueueRevision    string         `json:"queue_revision"`
+	}{tasks.ActiveSession, tasks.PendingEnrolment, tasks.EnrolmentQueueRevision}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("encode device tasks for ETag: %w", err)

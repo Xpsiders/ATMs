@@ -645,3 +645,33 @@ func TestCloseOpenDemoSessionsQueryIsTenantScopedAndOnlyTouchesOpenRows(t *testi
 		t.Error("open sessions are closed, never deleted; their attendance is a record")
 	}
 }
+
+func TestSeedRemovesOnlyTenantScopedSeededDeviceSlots(t *testing.T) {
+	t.Parallel()
+	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	slotIDs := make(map[string]bool, len(plan.venues)*len(plan.students))
+	for venueIndex := range plan.venues {
+		for studentIndex := range plan.students {
+			slotID := seededDeviceSlotID(venueIndex, studentIndex)
+			if slotIDs[slotID] {
+				t.Fatalf("seeded device slot ID %s is duplicated", slotID)
+			}
+			slotIDs[slotID] = true
+		}
+	}
+	if want := len(plan.venues) * len(plan.students); len(slotIDs) != want {
+		t.Fatalf("seeded device slot IDs = %d, want %d", len(slotIDs), want)
+	}
+	if !strings.Contains(deleteSeedSlotTasksQuery, "institution_id=$1") ||
+		!strings.Contains(deleteSeedSlotTasksQuery, "slot_id=$2") {
+		t.Fatalf("seeded enrolment task cleanup is not tenant/slot scoped: %s", deleteSeedSlotTasksQuery)
+	}
+	if !strings.Contains(deleteSeedSlotQuery, "institution_id=$1") ||
+		!strings.Contains(deleteSeedSlotQuery, "id=$2") {
+		t.Fatalf("seeded slot cleanup is not tenant/ID scoped: %s", deleteSeedSlotQuery)
+	}
+}

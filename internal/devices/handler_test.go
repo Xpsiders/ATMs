@@ -171,12 +171,86 @@ func TestEnqueueEnrolmentReturnsSlot(t *testing.T) {
 	}
 }
 
+func TestEnqueueSeededStudentAccountIDReturnsEnrolment(t *testing.T) {
+	t.Parallel()
+	const seededStudentAccountID = "10000000-0000-4000-8000-000000000050"
+	router := newRouter(t, &fakeRepo{})
+	response := post(t, router, "/devices/"+testDevice+"/enrolments",
+		`{"student_record_id":"`+seededStudentAccountID+`"}`)
+	if response.Code != http.StatusCreated ||
+		!strings.Contains(response.Body.String(), `"task_id":"task-1"`) ||
+		!strings.Contains(response.Body.String(), `"slot_number":7`) {
+		t.Fatalf("seeded student account enrolment = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestEnqueueEnrolmentStudentNotFoundMapsTo404(t *testing.T) {
 	t.Parallel()
 	router := newRouter(t, &fakeRepo{err: ErrStudentNotFound})
 	response := post(t, router, "/devices/"+testDevice+"/enrolments", `{"student_record_id":"`+testStudent+`"}`)
 	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), `"code":"student_not_found"`) {
 		t.Fatalf("student-not-found response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestEnqueueEnrolmentDeviceCapacityMapsToConflict(t *testing.T) {
+	t.Parallel()
+	router := newRouter(t, &fakeRepo{err: ErrDeviceSlotCapacity})
+	response := post(t, router, "/devices/"+testDevice+"/enrolments", `{"student_record_id":"`+testStudent+`"}`)
+	if response.Code != http.StatusConflict ||
+		!strings.Contains(response.Body.String(), `"code":"device_capacity_reached"`) {
+		t.Fatalf("device-capacity response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestEnrolmentStudentLookupIsTenantScopedAndSupportsSeededAccountIDs(t *testing.T) {
+	t.Parallel()
+	normalized := strings.Join(strings.Fields(resolveEnrolmentStudentQuery), " ")
+	for _, fragment := range []string{
+		"FROM student_records",
+		"WHERE institution_id=$1",
+		"(id=$2 OR claimed_by_user_id=$2)",
+		"ORDER BY (id=$2) DESC",
+	} {
+		if !strings.Contains(normalized, fragment) {
+			t.Errorf("enrolment student query lacks %q: %s", fragment, normalized)
+		}
+	}
+	slotQuery := strings.Join(strings.Fields(findDeviceStudentSlotQuery), " ")
+	for _, fragment := range []string{
+		"FROM device_slots",
+		"WHERE institution_id=$1 AND device_id=$2 AND student_record_id=$3",
+	} {
+		if !strings.Contains(slotQuery, fragment) {
+			t.Errorf("existing device-slot query lacks %q: %s", fragment, slotQuery)
+		}
+	}
+}
+
+func TestNextDeviceSlotNumberRespectsFirmwareRange(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		maxSlot int
+		want    int
+		wantErr error
+	}{
+		{maxSlot: 0, want: 1},
+		{maxSlot: 299, want: 300},
+		{maxSlot: 300, wantErr: ErrDeviceSlotCapacity},
+		{maxSlot: 301, wantErr: ErrDeviceSlotCapacity},
+		{maxSlot: -1, wantErr: ErrDeviceSlotCapacity},
+	}
+	for _, test := range tests {
+		got, err := nextDeviceSlotNumber(test.maxSlot)
+		if test.wantErr != nil && err != test.wantErr {
+			t.Errorf("nextDeviceSlotNumber(%d) error = %v, want %v", test.maxSlot, err, test.wantErr)
+		}
+		if test.wantErr == nil && err != nil {
+			t.Errorf("nextDeviceSlotNumber(%d) error = %v", test.maxSlot, err)
+		}
+		if err == nil && got != test.want {
+			t.Errorf("nextDeviceSlotNumber(%d) = %d, want %d", test.maxSlot, got, test.want)
+		}
 	}
 }
 

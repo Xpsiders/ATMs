@@ -222,6 +222,8 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error, 
 		httpx.WriteError(w, http.StatusNotFound, "device_not_found", "Device not found in this institution", nil)
 	case errors.Is(err, ErrStudentNotFound):
 		httpx.WriteError(w, http.StatusNotFound, "student_not_found", "Student record not found in this institution", nil)
+	case errors.Is(err, ErrDeviceSlotCapacity):
+		httpx.WriteError(w, http.StatusConflict, "device_capacity_reached", "Scanner has no available fingerprint slots", nil)
 	default:
 		slog.ErrorContext(r.Context(), action+" failed", "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal_error", "Unable to complete device request", nil)

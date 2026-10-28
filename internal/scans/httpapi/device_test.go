@@ -104,7 +104,10 @@ func TestDeviceTasksReturnsServerTimeAndSupportsETag(t *testing.T) {
 	t.Parallel()
 	store := &fakeDeviceStore{
 		deviceFound: true,
-		tasks:       scans.Tasks{ActiveSession: &scans.ActiveSession{ID: "session-1", VenueID: "venue-1"}},
+		tasks: scans.Tasks{
+			ActiveSession:          &scans.ActiveSession{ID: "session-1", VenueID: "venue-1"},
+			EnrolmentQueueRevision: "pending-1",
+		},
 	}
 	router := newDeviceRouter(t, store)
 	firstRequest := httptest.NewRequest(http.MethodGet, "/device/tasks", nil).WithContext(context.Background())
@@ -113,6 +116,9 @@ func TestDeviceTasksReturnsServerTimeAndSupportsETag(t *testing.T) {
 	router.ServeHTTP(first, firstRequest)
 	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), `"server_time":"2027-01-15T08:00:00Z"`) {
 		t.Fatalf("tasks response = %d %s", first.Code, first.Body.String())
+	}
+	if strings.Contains(first.Body.String(), "queue_revision") {
+		t.Fatalf("internal queue revision leaked into tasks response: %s", first.Body.String())
 	}
 	etag := first.Header().Get("ETag")
 	if etag == "" {
