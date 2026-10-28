@@ -228,12 +228,15 @@ func (s *PostgresStore) ConvertToFixedCode(ctx context.Context, institutionIDTex
 	if err != nil {
 		return sessions.Session{}, fmt.Errorf("convert session code: %w", err)
 	}
-	if err := queries.InsertAuditLog(ctx, dbgen.InsertAuditLogParams{
-		InstitutionID: institutionID, ActorUserID: actorID,
-		Action: "session.code.fixed", ResourceType: "lecture_session",
-		ResourceID: sessionID.String(), Details: []byte(`{"mode":"fixed"}`),
-		CreatedAt: pgtype.Timestamptz{Time: changedAt.UTC(), Valid: true},
-	}); err != nil {
+	details, err := fixedCodeAuditDetails()
+	if err != nil {
+		return sessions.Session{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO audit_log
+		(institution_id,actor_user_id,action,resource_type,resource_id,details,created_at)
+		VALUES($1,$2,'session.code.fixed','lecture_session',$3,$4::jsonb,$5)`,
+		institutionID, actorID, sessionID.String(), details,
+		pgtype.Timestamptz{Time: changedAt.UTC(), Valid: true}); err != nil {
 		return sessions.Session{}, fmt.Errorf("audit fixed-code conversion: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -303,6 +306,14 @@ func (s *PostgresStore) RecentreSession(
 		return fmt.Errorf("commit session recentre: %w", err)
 	}
 	return nil
+}
+
+func fixedCodeAuditDetails() (string, error) {
+	details, err := json.Marshal(map[string]string{"mode": "fixed"})
+	if err != nil {
+		return "", fmt.Errorf("encode fixed-code audit details: %w", err)
+	}
+	return string(details), nil
 }
 
 // calibrateVenue writes a captured centre onto the venue and audits it. An
