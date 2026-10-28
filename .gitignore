@@ -4,4 +4,16 @@
 /bin/
 /coverage.out
 /sqlc-generated/
-docs/
+# Binaries `go build ./...` drops in the repo root for the main packages.
+/api.exe
+/migrate.exe
+/seed.exe
+/api
+/migrate
+/seed
+# Design sources and other binaries kept out of git. This used to ignore all of
+# docs/, which also hid every new markdown file from `git status`.
+docs/*.pdf
+docs/*.png
+docs/*.jpg
+.claude/

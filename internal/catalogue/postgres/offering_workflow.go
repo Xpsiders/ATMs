@@ -122,7 +122,7 @@ func (s *Store) CreateLecturerOffering(ctx context.Context, institutionIDText, u
 			roster_policy, min_attendance_pct, late_counts_as_attended, auto_targets, timetable
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb) RETURNING id::text`,
 			tenant, user, course, semester, input.Level, input.RegistrationMode, input.RosterPolicy,
-			*input.MinAttendancePct, lateCounts, targetsJSON, slotsJSON).Scan(&requestID)
+			*input.MinAttendancePct, lateCounts, string(targetsJSON), string(slotsJSON)).Scan(&requestID)
 		if err != nil {
 			return nil, fmt.Errorf("create pending teaching request: %w", err)
 		}

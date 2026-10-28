@@ -319,7 +319,7 @@ func (s *Store) CommitStaff(ctx context.Context, institutionID, userID string, s
 			return fmt.Errorf("encode staff import audit: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
-			VALUES($1,$2,'staff.imported','staff_record',$3,$4::jsonb)`, tenant, actor, recordID, body); err != nil {
+			VALUES($1,$2,'staff.imported','staff_record',$3,$4::jsonb)`, tenant, actor, recordID, string(body)); err != nil {
 			return fmt.Errorf("audit staff import: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)

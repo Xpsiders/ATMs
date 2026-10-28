@@ -18,13 +18,13 @@ func TestBuildSeedPlanCoversFrontendDataset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(plan.faculties) != 2 || len(plan.departments) != 4 || len(plan.programmes) != 4 ||
-		len(plan.courses) != 10 || len(plan.offerings) != 10 || len(plan.venues) != 4 {
+		len(plan.courses) != 60 || len(plan.offerings) != 60 || len(plan.venues) != 4 {
 		t.Fatalf("unexpected organization/catalogue counts: faculties=%d departments=%d programmes=%d courses=%d offerings=%d venues=%d",
 			len(plan.faculties), len(plan.departments), len(plan.programmes),
 			len(plan.courses), len(plan.offerings), len(plan.venues))
 	}
-	if len(plan.students) != 48 {
-		t.Fatalf("student records=%d, want 48", len(plan.students))
+	if len(plan.students) != 60 {
+		t.Fatalf("student records=%d, want 60", len(plan.students))
 	}
 	claimed, unclaimed := 0, 0
 	for _, student := range plan.students {
@@ -34,8 +34,67 @@ func TestBuildSeedPlanCoversFrontendDataset(t *testing.T) {
 			claimed++
 		}
 	}
-	if claimed != 16 || unclaimed != 32 {
-		t.Fatalf("claimed=%d unclaimed=%d, want 16 and 32", claimed, unclaimed)
+	if claimed != 40 || unclaimed != 20 {
+		t.Fatalf("claimed=%d unclaimed=%d, want 40 and 20", claimed, unclaimed)
+	}
+}
+
+// The catalogue has to be big enough to exercise search, filters and the
+// lecturer picker, and spread over the levels a real department teaches.
+func TestSeedCatalogueDepthSpansLevelsAndGeneralCourses(t *testing.T) {
+	t.Parallel()
+	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	general, codes := 0, make(map[string]bool, len(plan.courses))
+	for _, course := range plan.courses {
+		if codes[course.code] {
+			t.Fatalf("duplicate course code %q", course.code)
+		}
+		codes[course.code] = true
+		if course.kind == "general" {
+			general++
+		}
+	}
+	if general < 20 {
+		t.Errorf("general courses=%d, want at least 20", general)
+	}
+	levels := make(map[int]int, 5)
+	departments := make(map[string]int, len(plan.departments))
+	for _, offering := range plan.offerings {
+		levels[offering.level]++
+		if offering.lecturerID == "" {
+			t.Fatalf("offering %s has no lecturer", offering.id)
+		}
+		course := courseByID(plan.courses, offering.courseID)
+		departments[course.departmentID]++
+	}
+	for _, level := range []int{200, 300, 400, 500} {
+		if levels[level] == 0 {
+			t.Errorf("no offering at %d level", level)
+		}
+	}
+	if len(departments) != len(plan.departments) {
+		t.Errorf("courses cover %d departments, want %d", len(departments), len(plan.departments))
+	}
+	// Every level with offerings needs students who can register for them.
+	studentLevels := make(map[int]int, 5)
+	for _, student := range plan.students {
+		studentLevels[student.level]++
+	}
+	for level := range levels {
+		if studentLevels[level] == 0 {
+			t.Errorf("offerings exist at %d level with no students at that level", level)
+		}
+	}
+	// The extra courses must be shared out, not piled on one lecturer each.
+	lecturers := make(map[string]int, 16)
+	for _, offering := range plan.offerings {
+		lecturers[offering.lecturerID]++
+	}
+	if len(lecturers) < 8 {
+		t.Errorf("offerings are spread over %d lecturers, want at least 8", len(lecturers))
 	}
 }
 
@@ -186,12 +245,29 @@ func TestSeedVenuePlacementAndOpenSessionSnapshotsUseConfiguredOrigin(t *testing
 		t.Fatalf("origin venue mismatch: %+v", venues[0])
 	}
 	for _, venue := range venues[1:3] {
+		// One of the near venues is deliberately uncalibrated: no coordinates
+		// and no radius, which is the normal starting state for a room now.
+		if !venue.located {
+			if venue.lat != 0 || venue.lng != 0 || venue.radius != 0 {
+				t.Errorf("venue %q has no location but carries coordinates: %+v", venue.name, venue)
+			}
+			continue
+		}
 		if distanceMeters(config.originLatitude, config.originLongitude, venue.lat, venue.lng) > 30 {
 			t.Errorf("near venue %q is not within 30m of configured origin", venue.name)
 		}
 		if venue.radius != config.venueRadius {
 			t.Errorf("near venue %q radius = %d, want %d", venue.name, venue.radius, config.venueRadius)
 		}
+	}
+	uncalibrated := 0
+	for _, venue := range venues {
+		if !venue.located {
+			uncalibrated++
+		}
+	}
+	if uncalibrated != 1 {
+		t.Errorf("venues with no location = %d, want exactly 1", uncalibrated)
 	}
 	farVenue := venues[3]
 	if farVenue.id != seedID(403) || farVenue.name != "Far Test Venue (5 km)" ||
@@ -209,20 +285,25 @@ func TestSeedVenuePlacementAndOpenSessionSnapshotsUseConfiguredOrigin(t *testing
 	for _, venue := range plan.venues {
 		venueByID[venue.id] = venue
 	}
-	openCount := 0
+	checked := 0
 	for _, session := range plan.sessions {
-		if session.endedAt != nil {
+		venue := venueByID[session.venueID]
+		if !venue.located {
+			if session.located || session.latitude != 0 || session.longitude != 0 || session.radius != 0 {
+				t.Errorf("session %s at uncalibrated venue %s carries a geofence: %+v",
+					session.id, venue.id, session)
+			}
 			continue
 		}
-		openCount++
-		venue := venueByID[session.venueID]
-		if session.latitude != venue.lat || session.longitude != venue.lng || session.radius != venue.radius {
-			t.Errorf("open session %s snapshot does not match venue %s: %+v / %+v",
+		checked++
+		if !session.located || session.latitude != venue.lat ||
+			session.longitude != venue.lng || session.radius != venue.radius {
+			t.Errorf("session %s snapshot does not match venue %s: %+v / %+v",
 				session.id, venue.id, session, venue)
 		}
 	}
-	if openCount == 0 {
-		t.Fatal("seed has no open session to check")
+	if checked == 0 {
+		t.Fatal("seed has no located session to check")
 	}
 }
 
@@ -415,17 +496,25 @@ func TestSeedPlanIncludesOpenNowAndLaterTodayTimetable(t *testing.T) {
 	if laterEntry.startsAt <= nowTime {
 		t.Fatalf("later-today slot starts at %s, not after %s", laterEntry.startsAt, nowTime)
 	}
-	openSessions := 0
+	// Today's timetable still shows a class due now, but the seed leaves no
+	// live session: starting one is the lecturer's job, and it is what gives
+	// the room its coordinates.
 	for _, session := range plan.sessions {
 		if session.endedAt == nil {
-			openSessions++
-			if session.startedAt.After(now) {
-				t.Errorf("open demo session starts in the future: %s", session.startedAt)
-			}
+			t.Errorf("demo session %s is open; the seed must leave no live classes", session.id)
+		}
+		if session.startedAt.After(now) {
+			t.Errorf("demo session starts in the future: %s", session.startedAt)
 		}
 	}
-	if openSessions != 2 {
-		t.Fatalf("open sessions=%d, want one now at each of two venues", openSessions)
+	ranToday := 0
+	for _, session := range plan.sessions {
+		if session.startedAt.After(now.Add(-6 * time.Hour)) {
+			ranToday++
+		}
+	}
+	if ranToday == 0 {
+		t.Error("no recently finished session, so the reports have nothing current to show")
 	}
 }
 
@@ -600,5 +689,88 @@ func TestSeedPlanProvidesPriorAndCurrentSemesters(t *testing.T) {
 	if plan.priorSemesterStart.Before(plan.academicStart) || plan.semesterEnd.After(plan.academicEnd) {
 		t.Fatalf("semesters fall outside the academic session %s..%s",
 			plan.academicStart, plan.academicEnd)
+	}
+}
+
+// The seeded check-ins have to cover what the new check-in rules can produce:
+// a position inside the room, a position the phone's own accuracy cannot
+// explain, and no position at all. Every row needs a device hash, because
+// device binding is what now stops one handset checking in a row of friends.
+func TestSeedWebCheckinsCoverOptionalLocationAndDeviceBinding(t *testing.T) {
+	t.Parallel()
+	plan, err := buildSeedPlan(time.Date(2026, time.October, 21, 7, 53, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.webCheckins) == 0 {
+		t.Fatal("seed has no web check-ins")
+	}
+	withPosition, withoutPosition, unexplained := 0, 0, 0
+	for _, checkin := range plan.webCheckins {
+		session := sessionByID(plan.sessions, checkin.sessionID)
+		if session.id == "" {
+			t.Fatalf("check-in references unknown session %s", checkin.sessionID)
+		}
+		if checkin.position == nil {
+			withoutPosition++
+			if session.located {
+				continue
+			}
+			continue
+		}
+		withPosition++
+		if !session.located {
+			t.Errorf("check-in on session %s has a position but the session has no geofence",
+				session.id)
+		}
+		if checkin.position.accuracy < 0 || checkin.position.distance < 0 {
+			t.Errorf("check-in on session %s has a negative fix: %+v", session.id, checkin.position)
+		}
+		// The service flags a fix only when the reported accuracy, capped at
+		// 250 m, cannot cover the gap past the radius.
+		allowance := checkin.position.accuracy
+		if allowance > 250 {
+			allowance = 250
+		}
+		if checkin.position.distance > float64(session.radius)+allowance {
+			unexplained++
+		}
+	}
+	if withPosition == 0 {
+		t.Error("no check-in carries a position")
+	}
+	if withoutPosition == 0 {
+		t.Error("no check-in was recorded without a position; a denied permission must still be demo-able")
+	}
+	if unexplained == 0 {
+		t.Error("no check-in is flagged location_unverified, so the report's review state has no example")
+	}
+	hashes := make(map[string]bool, len(plan.webCheckins))
+	for _, checkin := range plan.webCheckins {
+		hash := studentDeviceHash(checkin.studentID)
+		if len(hash) != 32 {
+			t.Fatalf("device hash for %s is %d bytes, want 32", checkin.studentID, len(hash))
+		}
+		hashes[string(hash)] = true
+	}
+	if len(hashes) < 2 {
+		t.Error("seeded check-ins share one device hash, which the binding rule would refuse")
+	}
+}
+
+// Rerunning the seed must leave no live class behind, including one a lecturer
+// started during an earlier demo. A session left open would occupy its venue
+// and the one-open-session-per-venue rule would then refuse the class the demo
+// asks the lecturer to start.
+func TestCloseOpenDemoSessionsQueryIsTenantScopedAndOnlyTouchesOpenRows(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(closeOpenDemoSessionsQuery, "institution_id=$1") {
+		t.Error("closing open demo sessions must be scoped to the demo institution")
+	}
+	if !strings.Contains(closeOpenDemoSessionsQuery, "ended_at IS NULL") {
+		t.Error("closing open demo sessions must not rewrite an already closed session's end time")
+	}
+	if strings.Contains(closeOpenDemoSessionsQuery, "DELETE") {
+		t.Error("open sessions are closed, never deleted; their attendance is a record")
 	}
 }

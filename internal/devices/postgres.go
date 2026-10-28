@@ -506,7 +506,7 @@ func writeAudit(ctx context.Context, q queryer, tenant, actorID pgtype.UUID, act
 		return fmt.Errorf("encode device audit details: %w", err)
 	}
 	if _, err := q.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
-		VALUES($1,$2,$3,'device',$4,$5::jsonb)`, tenant, actorID, action, resourceID, encoded); err != nil {
+		VALUES($1,$2,$3,'device',$4,$5::jsonb)`, tenant, actorID, action, resourceID, string(encoded)); err != nil {
 		return fmt.Errorf("write device audit: %w", err)
 	}
 	return nil

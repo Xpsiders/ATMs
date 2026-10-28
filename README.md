@@ -39,11 +39,20 @@ attendance service.
 The compose file provides an API and PostgreSQL service. Apply migrations with
 `go run ./cmd/migrate up` after PostgreSQL is healthy, then run `make seed` to
 load the date-relative demo dataset. It includes one institution, two
-faculties, four departments and programmes, ten courses and offerings across
-all registration modes, four lecturers, 48 student records (16 claimed
-accounts), three venues and scanners, weekly timetable entries, live and
-historical sessions, varied attendance evidence and overrides, and pending
-invitation, signup, and scanner-enrolment records. The seed prints a login
+faculties, four departments and programmes, 60 courses and offerings across all
+registration modes (20 of them general-studies courses, spread over 100-500
+level), fourteen lecturers, 60 student records (40 claimed accounts) across
+100-500 level, four venues and scanners, weekly timetable entries, historical
+sessions, varied attendance evidence and overrides, and pending invitation,
+signup, and scanner-enrolment records.
+
+**The seed leaves no open class, by design.** Starting one is the lecturer's
+job, and it is what gives a room its coordinates, so a pre-opened session would
+both pre-empt that and block the venue under the one-open-session-per-venue
+rule. One venue ("Innovation Lab") is seeded with no coordinates at all, so the
+first lecturer to start a class there exercises the capture. Rerunning the seed
+closes any session left open and releases stale student claims, so it converges
+on the dataset rather than failing. The seed prints a login
 table and the unclaimed matric/email pairs. Use the institution UUID printed
 there for login. Newly created scanner keys and the pending invitation token
 are displayed only once; reruns preserve them. To recreate only the demo
@@ -117,9 +126,10 @@ endpoint above. In Google Maps, right-click your physical position and copy the
 coordinates;
 enter latitude first and longitude second. Indoor browser location can be off
 by tens of metres, so a venue radius of 150–200 metres is a sensible starting
-point for check-in testing. The seed places three venues at or within 25 metres
-of the configured origin and adds a fourth venue about 5 km away for testing
-`location_unverified`.
+point for check-in testing. The seed places two venues at or within 25 metres
+of the configured origin, leaves "Innovation Lab" with no coordinates so the
+lecturer-device capture can be exercised, and adds a fourth venue about 5 km
+away for testing `location_unverified`.
 
 Set `SEED_ORIGIN_LAT`, `SEED_ORIGIN_LNG`, and optionally
 `SEED_VENUE_RADIUS_M` in the repository-root `.env` file (the radius defaults

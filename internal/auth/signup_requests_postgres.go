@@ -141,7 +141,7 @@ func (s *PostgresStore) ReviewSignupRequest(
 	}
 	action := "signup_request." + status
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
-		VALUES($1,$2,$3,'signup_request',$4,$5::jsonb)`, tenant, actor, action, requestID, details); err != nil {
+		VALUES($1,$2,$3,'signup_request',$4,$5::jsonb)`, tenant, actor, action, requestID, string(details)); err != nil {
 		return fmt.Errorf("audit signup request review: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -680,7 +680,7 @@ func (s *Store) Update(ctx context.Context, institutionID, actorID string, resou
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id, actor_user_id, action, resource_type, resource_id, details)
 			VALUES ($1,$2,'offering.updated','course_offering',$3,jsonb_build_object('fields',$4::jsonb))`,
-			tenant, actor, itemID, details); err != nil {
+			tenant, actor, itemID, string(details)); err != nil {
 			return nil, fmt.Errorf("audit offering update: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {

@@ -26,6 +26,15 @@ const legacyOpenSessionID = "10000000-0000-4000-8000-000000001004"
 const closeLegacyOpenSessionQuery = `UPDATE lecture_sessions SET ended_at=$3
 WHERE institution_id=$1 AND id=$2 AND ended_at IS NULL`
 
+// closeOpenDemoSessionsQuery leaves the demo institution with no live class.
+// Starting one is the lecturer's job and is what calibrates the room, so the
+// seed must not leave a session occupying a venue - the
+// one-open-session-per-venue rule would then refuse the very class the demo
+// asks the lecturer to start. It is scoped to the demo institution, and only
+// touches sessions still open.
+const closeOpenDemoSessionsQuery = `UPDATE lecture_sessions SET ended_at=$2
+WHERE institution_id=$1 AND ended_at IS NULL`
+
 const (
 	defaultOriginLatitude  = 6.5244
 	defaultOriginLongitude = 3.3792
@@ -53,7 +62,9 @@ var (
 		"Amara", "Chika", "Emeka", "Femi", "Ifeoma", "Kemi",
 		"Kunle", "Mariam", "Nneka", "Olu", "Tari", "Zainab",
 	}
-	seedStudentLastNames = []string{"Adebayo", "Balogun", "Eze", "Okafor"}
+	// Five surnames against twelve first names gives exactly sixty unique
+	// student names, one per seeded record.
+	seedStudentLastNames = []string{"Adebayo", "Balogun", "Eze", "Okafor", "Ogunleye"}
 )
 
 type seedConfig struct {
@@ -158,6 +169,13 @@ type seedVenue struct {
 	lng    float64
 	radius int
 	device string
+	// located is false for a room that has never been stood in. Its
+	// coordinates and radius are stored as NULL, which is now the normal
+	// starting state for a venue: the first lecturer to teach there supplies
+	// the position from their own device. The surviving
+	// CHECK (radius_meters > 0) also means a radius of 0 is not a legal
+	// stand-in for "unknown".
+	located bool
 }
 
 type seedTimetable struct {
@@ -181,6 +199,10 @@ type seedSession struct {
 	longitude  float64
 	radius     int
 	lateAfter  int
+	// located mirrors seedVenue.located: a session started at an
+	// uncalibrated room snapshots no geofence, and check-ins against it carry
+	// no distance.
+	located bool
 }
 
 type seedRegistration struct {
@@ -195,6 +217,20 @@ type seedWebCheckin struct {
 	status    string
 	at        time.Time
 	onRoster  bool
+	// position is nil when the student's browser supplied no location. That is
+	// an ordinary successful check-in now: location is evidence, never a gate.
+	position *seedPosition
+}
+
+// seedPosition is the fix a web check-in was recorded with. distance is stored
+// rather than derived so a fixture can describe a position the phone's own
+// accuracy cannot explain, which the session report flags as
+// location_unverified.
+type seedPosition struct {
+	latitude  float64
+	longitude float64
+	accuracy  float64
+	distance  float64
 }
 
 type seedFingerprint struct {
@@ -409,6 +445,9 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 		return name
 	}
 	departmentLecturers := make([]int, len(plan.departments))
+	// Every lecturer in a department, so the extra courses below can be shared
+	// out instead of piling onto the one lecturer per department.
+	lecturersByDepartment := make([][]string, len(plan.departments))
 	addLecturer := func(departmentIndex int) string {
 		department := plan.departments[departmentIndex]
 		departmentLecturers[departmentIndex]++
@@ -417,8 +456,10 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 		if ordinal > 1 {
 			email = strings.ToLower(fmt.Sprintf("%s-lecturer-%02d@attendance.test", department.code, ordinal))
 		}
-		return addUser(nextLecturerName(), email, "lecturer", "department", "", department.id,
+		id := addUser(nextLecturerName(), email, "lecturer", "department", "", department.id,
 			fmt.Sprintf("STAFF-%s-%02d", department.code, ordinal))
+		lecturersByDepartment[departmentIndex] = append(lecturersByDepartment[departmentIndex], id)
+		return id
 	}
 	for index, department := range plan.departments {
 		addUser(department.name+" administrator",
@@ -434,7 +475,7 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 	studentNumber := 100
 	for departmentIndex, department := range plan.departments {
 		programmeID := plan.programmes[departmentIndex].id
-		for levelIndex, level := range []int{100, 200, 300, 400} {
+		for levelIndex, level := range []int{100, 200, 300, 400, 500} {
 			for ordinal := 0; ordinal < 3; ordinal++ {
 				studentID := seedID(studentNumber)
 				studentNumber++
@@ -442,7 +483,7 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 				email := strings.ToLower(fmt.Sprintf("%s-%d-%02d@student.attendance.test", department.code, level, ordinal+1))
 				displayName := seedStudentDisplayName(departmentIndex, levelIndex, ordinal)
 				userID := ""
-				if ordinal == 0 {
+				if ordinal < 2 {
 					userID = addUser(
 						displayName,
 						email, "student", "department", "", department.id, "")
@@ -482,6 +523,7 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 		}
 		plan.offerings = append(plan.offerings, offering)
 	}
+	appendCatalogueDepth(&plan, lecturersByDepartment)
 	venues, err := placeSeedVenues(config)
 	if err != nil {
 		return seedPlan{}, err
@@ -554,21 +596,52 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 			id: seedID(sessionID), offeringID: timetable.offeringID, venueID: timetable.venueID,
 			timetable: timetable.id, lecturerID: plan.offerings[0].lecturerID,
 			startedAt: started, endedAt: &ended, latitude: venue.lat, longitude: venue.lng,
-			radius: venue.radius, lateAfter: 10,
+			radius: venue.radius, lateAfter: 10, located: venue.located,
 		})
 		sessionID++
+	}
+	// Nothing is left open. A live class is something a lecturer starts from
+	// their own device, which is also what calibrates the room, so seeding an
+	// already-open session would both pre-empt that and block the venue under
+	// the one-open-session-per-venue rule. These two ended a few minutes ago,
+	// so today's timetable still shows a class that has just run.
+	justEnded := currentStart.Add(25 * time.Minute).UTC()
+	if !justEnded.Before(plan.now) {
+		justEnded = plan.now.Add(-time.Minute)
 	}
 	for index := 0; index < 2; index++ {
 		timetable := plan.timetables[index]
 		venue := venueByID(venues, timetable.venueID)
 		started := currentStart.UTC()
+		ended := justEnded
+		if !ended.After(started) {
+			ended = started.Add(time.Minute)
+		}
 		plan.sessions = append(plan.sessions, seedSession{
 			id: seedID(sessionID), offeringID: timetable.offeringID, venueID: timetable.venueID,
 			timetable: timetable.id, lecturerID: plan.offerings[offeringIndex(plan.offerings, timetable.offeringID)].lecturerID,
-			startedAt: started, latitude: venue.lat, longitude: venue.lng,
-			radius: venue.radius, lateAfter: 10,
+			startedAt: started, endedAt: &ended, latitude: venue.lat, longitude: venue.lng,
+			radius: venue.radius, lateAfter: 10, located: venue.located,
 		})
 		sessionID++
+	}
+	// One past class in the room that has never been calibrated, so the
+	// reports show a session with no geofence and check-ins with no distance.
+	for _, timetable := range plan.timetables {
+		venue := venueByID(venues, timetable.venueID)
+		if venue.located {
+			continue
+		}
+		started := today.AddDate(0, 0, -2).Add(10 * time.Hour).UTC()
+		ended := started.Add(75 * time.Minute)
+		plan.sessions = append(plan.sessions, seedSession{
+			id: seedID(sessionID), offeringID: timetable.offeringID, venueID: timetable.venueID,
+			timetable:  timetable.id,
+			lecturerID: plan.offerings[offeringIndex(plan.offerings, timetable.offeringID)].lecturerID,
+			startedAt:  started, endedAt: &ended, lateAfter: 10,
+		})
+		sessionID++
+		break
 	}
 
 	buildRegistrations(&plan)
@@ -579,8 +652,99 @@ func buildSeedPlanWithConfig(now time.Time, config seedConfig) (seedPlan, error)
 	return plan, nil
 }
 
+// appendCatalogueDepth adds the bulk of the catalogue: fifty further courses
+// spread over 200 to 500 level, twenty of them general-studies courses open to
+// every department, each with an offering and a lecturer from the owning
+// department. The first ten courses stay hand-written because the demo script
+// and the tests name them; these exist so search, filtering, the lecturer
+// picker and the registration screens have a realistic amount to work with.
+func appendCatalogueDepth(plan *seedPlan, lecturersByDepartment [][]string) {
+	const (
+		generalCourses      = 20
+		departmentalCourses = 30
+	)
+	levels := []int{200, 300, 400, 500}
+	// Mostly registerable modes, with closed appearing occasionally so the
+	// "registration is not open" path has examples at several levels.
+	modes := []string{"auto", "open", "approval", "auto", "open", "auto", "approval", "closed"}
+	generalTitles := []string{
+		"Use of English", "Nigerian Peoples and Culture", "Philosophy and Logic",
+		"Entrepreneurship Studies", "Environment and Sustainability",
+		"History of Science and Technology", "Peace and Conflict Studies",
+		"Citizenship Education", "Research Methods", "Technical Writing",
+		"Introduction to Economics", "Data Literacy", "Professional Ethics",
+		"Public Health Awareness", "Leadership and Teamwork",
+		"Digital Skills for Scholarship", "Statistics for Social Research",
+		"Innovation and Enterprise", "Climate and Society", "Critical Thinking",
+	}
+	departmentalTitles := []string{
+		"Circuit Analysis", "Control Systems", "Power Electronics",
+		"Microprocessor Systems", "Communication Systems", "Machine Design",
+		"Fluid Mechanics", "Heat Transfer", "Manufacturing Processes",
+		"Applied Dynamics", "Data Structures", "Operating Systems",
+		"Computer Networks", "Software Engineering", "Artificial Intelligence",
+		"Compiler Construction", "Linear Algebra", "Real Analysis",
+		"Numerical Methods", "Discrete Mathematics", "Optimisation Methods",
+		"Instrumentation and Measurement", "Renewable Energy Systems",
+		"Mechatronics", "Thermal Systems Design", "Mobile Application Development",
+		"Information Security", "Cloud and Distributed Systems",
+		"Stochastic Processes", "Mathematical Modelling",
+	}
+	codeOrdinals := make(map[string]int)
+	nextCode := func(prefix string, level int) string {
+		key := fmt.Sprintf("%s-%d", prefix, level)
+		codeOrdinals[key]++
+		// Ordinals start at 10 so no generated code can collide with the
+		// hand-written ones, which all use 01.
+		return fmt.Sprintf("%s%d%02d", prefix, level/100, 9+codeOrdinals[key])
+	}
+	lecturerTurn := make([]int, len(plan.departments))
+	nextLecturer := func(departmentIndex int) string {
+		lecturers := lecturersByDepartment[departmentIndex]
+		if len(lecturers) == 0 {
+			return ""
+		}
+		id := lecturers[lecturerTurn[departmentIndex]%len(lecturers)]
+		lecturerTurn[departmentIndex]++
+		return id
+	}
+	add := func(ordinal int, kind, title string) {
+		departmentIndex := ordinal % len(plan.departments)
+		department := plan.departments[departmentIndex]
+		level := levels[(ordinal/len(plan.departments))%len(levels)]
+		prefix := department.code
+		description := title + " for " + department.name
+		if kind == "general" {
+			prefix = "GST"
+			description = title + ": a general-studies course open to every department"
+		}
+		course := seedCourse{
+			id: seedID(2000 + len(plan.courses)), departmentID: department.id,
+			code: nextCode(prefix, level), title: title, kind: kind,
+			description: description,
+		}
+		plan.courses = append(plan.courses, course)
+		offering := seedOffering{
+			id: seedID(2100 + len(plan.offerings)), courseID: course.id, level: level,
+			mode: modes[ordinal%len(modes)], lecturerID: nextLecturer(departmentIndex),
+			minimumPercent: 75, lateCounts: true,
+		}
+		if kind == "general" && offering.mode == "auto" {
+			offering.autoTargets = departmentIDs(plan.departments)
+		}
+		plan.offerings = append(plan.offerings, offering)
+	}
+	for ordinal := 0; ordinal < generalCourses; ordinal++ {
+		add(ordinal, "general", generalTitles[ordinal%len(generalTitles)])
+	}
+	for ordinal := 0; ordinal < departmentalCourses; ordinal++ {
+		add(ordinal, "departmental", departmentalTitles[ordinal%len(departmentalTitles)])
+	}
+}
+
 func seedStudentDisplayName(departmentIndex, levelIndex, ordinal int) string {
-	index := departmentIndex*12 + levelIndex*3 + ordinal
+	// Fifteen records per department: five levels of three students.
+	index := departmentIndex*15 + levelIndex*3 + ordinal
 	return seedStudentFirstNames[index%len(seedStudentFirstNames)] + " " +
 		seedStudentLastNames[index/len(seedStudentFirstNames)]
 }
@@ -642,17 +806,24 @@ func placeSeedVenues(config seedConfig) ([]seedVenue, error) {
 		return nil, errors.New("seed origin or venue radius is outside its valid range")
 	}
 	offsets := []struct {
-		id     int
-		name   string
-		north  float64
-		east   float64
-		radius int
-		device int
+		id      int
+		name    string
+		north   float64
+		east    float64
+		radius  int
+		device  int
+		located bool
 	}{
-		{id: 400, name: "LT 2", radius: config.venueRadius, device: 410},
-		{id: 401, name: "Science Lecture Theatre", north: 20, radius: config.venueRadius, device: 411},
-		{id: 402, name: "Innovation Lab", east: 25, radius: config.venueRadius, device: 412},
-		{id: 403, name: "Far Test Venue (5 km)", north: 5000, radius: 60, device: 413},
+		{id: 400, name: "LT 2", radius: config.venueRadius, device: 410, located: true},
+		{id: 401, name: "Science Lecture Theatre", north: 20, radius: config.venueRadius, device: 411, located: true},
+		// Deliberately uncalibrated: no coordinates, no radius. This is what a
+		// newly created room looks like, and it is how the demo exercises the
+		// lecturer-device capture - starting a class here sets the venue's
+		// position from the lecturer's own fix (location_source "device"), or
+		// opens with no geofence at all if they deny permission
+		// (location_source "none").
+		{id: 402, name: "Innovation Lab", east: 25, device: 412},
+		{id: 403, name: "Far Test Venue (5 km)", north: 5000, radius: 60, device: 413, located: true},
 	}
 	venues := make([]seedVenue, 0, len(offsets))
 	for _, offset := range offsets {
@@ -679,24 +850,32 @@ func placeSeedVenues(config seedConfig) ([]seedVenue, error) {
 		if latitude < -90 || latitude > 90 {
 			return nil, fmt.Errorf("origin coordinates cannot place venue %s within valid coordinate ranges", offset.name)
 		}
-		venues = append(venues, seedVenue{
-			id: seedID(offset.id), name: offset.name, lat: latitude, lng: longitude,
-			radius: offset.radius, device: seedID(offset.device),
-		})
+		venue := seedVenue{
+			id: seedID(offset.id), name: offset.name, device: seedID(offset.device),
+			located: offset.located,
+		}
+		if offset.located {
+			venue.lat, venue.lng, venue.radius = latitude, longitude, offset.radius
+		}
+		venues = append(venues, venue)
 	}
 	return venues, nil
 }
 
 func updateSeedVenues(ctx context.Context, tx pgx.Tx, plan seedPlan) error {
 	for _, venue := range plan.venues {
+		latitude, longitude, radius := venueLocationArgs(venue)
 		if err := execSeed(ctx, tx, "update venue "+venue.name, `
 INSERT INTO venues(id,institution_id,name,latitude,longitude,radius_meters)
 VALUES($1,$2,$3,$4,$5,$6)
 ON CONFLICT(institution_id,id) DO UPDATE SET name=EXCLUDED.name,
 latitude=EXCLUDED.latitude,longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters`,
-			venue.id, institutionID, venue.name, venue.lat, venue.lng, venue.radius); err != nil {
+			venue.id, institutionID, venue.name, latitude, longitude, radius); err != nil {
 			return err
 		}
+		// Any session a lecturer left open at this venue is re-snapshotted so a
+		// moved origin does not strand its students. A venue with no position
+		// clears the snapshot instead of writing zeroes.
 		if err := execSeed(ctx, tx, "update open sessions for "+venue.name, `
 UPDATE lecture_sessions AS ls
 SET latitude=v.latitude,longitude=v.longitude,radius_meters=v.radius_meters
@@ -711,19 +890,19 @@ WHERE ls.institution_id=$1 AND ls.venue_id=$2 AND ls.ended_at IS NULL
 }
 
 func buildRegistrations(plan *seedPlan) {
-	for _, student := range plan.students {
-		if student.userID == "" {
-			continue
-		}
-		for _, offering := range plan.offerings {
-			course := courseByID(plan.courses, offering.courseID)
+	for _, offering := range plan.offerings {
+		course := courseByID(plan.courses, offering.courseID)
+		eligible := 0
+		for _, student := range plan.students {
+			if student.userID == "" {
+				continue
+			}
 			if offering.level != student.level ||
 				course.kind == "departmental" && course.departmentID != student.departmentID ||
 				course.kind == "general" && !contains(offering.autoTargets, student.departmentID) && offering.mode == "auto" {
 				continue
 			}
 			status := ""
-			studentOrdinal := studentIndex(plan.students, student.id)
 			switch offering.mode {
 			case "auto":
 				if course.kind == "departmental" || contains(offering.autoTargets, student.departmentID) {
@@ -732,16 +911,20 @@ func buildRegistrations(plan *seedPlan) {
 					status = "pending"
 				}
 			case "open":
-				if studentOrdinal%2 == 0 {
+				// Half the eligible students have taken an open offering up.
+				if eligible%2 == 0 {
 					status = "approved"
 				}
 			case "approval":
-				if studentOrdinal%4 == 0 {
+				// The first is already approved and the rest are waiting, so
+				// every approval offering shows both sides of the queue.
+				if eligible == 0 {
 					status = "approved"
 				} else {
 					status = "pending"
 				}
 			}
+			eligible++
 			if status != "" {
 				plan.registrations = append(plan.registrations, seedRegistration{
 					offeringID: offering.id, studentID: student.id, status: status,
@@ -766,11 +949,25 @@ func buildAttendance(plan *seedPlan) {
 	past := func(sessionIndex int, student seedStudent) time.Time {
 		return attendanceSessions[sessionIndex].startedAt.Add(time.Duration(5+sessionIndex) * time.Minute)
 	}
-	addWeb := func(sessionIndex int, student seedStudent, status string, onRoster bool) {
+	// A check-in inside the room: a few metres from the centre, with the kind
+	// of accuracy a phone reports indoors.
+	atVenue := func(sessionIndex int) *seedPosition {
+		session := attendanceSessions[sessionIndex]
+		if !session.located {
+			return nil
+		}
+		venue := venueByID(plan.venues, session.venueID)
+		return &seedPosition{latitude: venue.lat, longitude: venue.lng, accuracy: 5, distance: 2}
+	}
+	addWebAt := func(sessionIndex int, student seedStudent, status string, onRoster bool, position *seedPosition) {
 		plan.webCheckins = append(plan.webCheckins, seedWebCheckin{
 			sessionID: attendanceSessions[sessionIndex].id, studentID: student.id,
 			status: status, at: past(sessionIndex, student), onRoster: onRoster,
+			position: position,
 		})
+	}
+	addWeb := func(sessionIndex int, student seedStudent, status string, onRoster bool) {
+		addWebAt(sessionIndex, student, status, onRoster, atVenue(sessionIndex))
 	}
 	addScan := func(sessionIndex int, student seedStudent) {
 		deviceID := venueByID(plan.venues, attendanceSessions[sessionIndex].venueID).device
@@ -796,6 +993,15 @@ func buildAttendance(plan *seedPlan) {
 	addWeb(0, studentB, "present", true)
 	addScan(0, studentB)
 	addWeb(1, studentB, "present", true)
+	// Recorded, but from a position its own reported accuracy cannot explain.
+	// Nothing refuses it any more; the session report shows it as
+	// web_only_unverified with reason location_unverified for the lecturer to
+	// confirm or clear.
+	if far := atVenue(1); far != nil {
+		far.distance = 5000
+		far.accuracy = 8
+		addWebAt(1, studentC, "present", true, far)
+	}
 	addWeb(2, studentA, "present", true)
 	addScan(2, studentA)
 	addScan(2, studentC)
@@ -826,10 +1032,48 @@ func buildAttendance(plan *seedPlan) {
 			plan.heartbeats = append(plan.heartbeats, seedHeartbeat{deviceID: plan.venues[0].device, at: plan.now})
 		}
 	}
+	// The class that has just finished at the second venue, so the most recent
+	// closed session has attendance of its own to report.
+	recent := plan.sessions[7]
+	recentAt := recent.startedAt.Add(6 * time.Minute)
+	if recent.endedAt != nil && !recentAt.Before(*recent.endedAt) {
+		recentAt = recent.startedAt
+	}
+	recentVenue := venueByID(plan.venues, recent.venueID)
+	recentPosition := &seedPosition{
+		latitude: recentVenue.lat, longitude: recentVenue.lng, accuracy: 7, distance: 4,
+	}
+	if !recent.located {
+		recentPosition = nil
+	}
 	plan.webCheckins = append(plan.webCheckins, seedWebCheckin{
-		sessionID: plan.sessions[7].id, studentID: studentA.id, status: "present",
-		at: plan.now, onRoster: true,
+		sessionID: recent.id, studentID: studentA.id, status: "present",
+		at: recentAt, onRoster: true, position: recentPosition,
 	})
+	// The class held in the room that has never been calibrated. There was no
+	// geofence to measure against, so the row carries no position at all and
+	// the report shows no distance - an ordinary, successful check-in.
+	for _, session := range plan.sessions {
+		if session.located || session.endedAt == nil {
+			continue
+		}
+		offering := offeringByID(plan.offerings, session.offeringID)
+		candidate := seedStudent{}
+		for _, registration := range plan.registrations {
+			if registration.offeringID == offering.id && registration.status == "approved" {
+				candidate = plan.students[studentIndex(plan.students, registration.studentID)]
+				break
+			}
+		}
+		if candidate.id == "" {
+			break
+		}
+		plan.webCheckins = append(plan.webCheckins, seedWebCheckin{
+			sessionID: session.id, studentID: candidate.id, status: "present",
+			at: session.startedAt.Add(4 * time.Minute), onRoster: true,
+		})
+		break
+	}
 }
 
 func seedDemoData(ctx context.Context, tx pgx.Tx, plan seedPlan, hashes, deviceHashes map[string][]byte, invitationHash []byte) (map[string]bool, bool, error) {
@@ -913,6 +1157,30 @@ email=EXCLUDED.email,display_name=EXCLUDED.display_name,user_id=EXCLUDED.user_id
 			}
 		}
 	}
+	// Release any demo claim the plan no longer intends before re-claiming.
+	// student_records is UNIQUE (institution_id, claimed_by_user_id), so when
+	// the dataset changes shape - more students, a different split of claimed
+	// records - a record still holding last run's user blocks the user's new
+	// record. Without this, rerunning the seed over an existing demo database
+	// fails instead of converging on the plan.
+	recordIDs := make([]string, 0, len(plan.students))
+	claimedUserIDs := make([]string, 0, len(plan.students))
+	for _, student := range plan.students {
+		if student.userID == "" {
+			continue
+		}
+		recordIDs = append(recordIDs, student.id)
+		claimedUserIDs = append(claimedUserIDs, student.userID)
+	}
+	if err := execSeed(ctx, tx, "release stale student claims", `
+UPDATE student_records AS sr SET claimed_by_user_id=NULL
+WHERE sr.institution_id=$1 AND sr.claimed_by_user_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM unnest($2::uuid[],$3::uuid[]) AS want(record_id,user_id)
+    WHERE want.record_id=sr.id AND want.user_id=sr.claimed_by_user_id
+  )`, institutionID, recordIDs, claimedUserIDs); err != nil {
+		return nil, false, err
+	}
 	for _, student := range plan.students {
 		var claimedBy any
 		if student.userID != "" {
@@ -989,12 +1257,13 @@ VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, institutionID, offering.id, departm
 		}
 	}
 	for _, venue := range plan.venues {
+		latitude, longitude, radius := venueLocationArgs(venue)
 		if err := execSeed(ctx, tx, "venue "+venue.name, `
 INSERT INTO venues(id,institution_id,name,latitude,longitude,radius_meters)
 VALUES($1,$2,$3,$4,$5,$6)
 ON CONFLICT(id) DO UPDATE SET name=EXCLUDED.name,latitude=EXCLUDED.latitude,
 longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters`,
-			venue.id, institutionID, venue.name, venue.lat, venue.lng, venue.radius); err != nil {
+			venue.id, institutionID, venue.name, latitude, longitude, radius); err != nil {
 			return nil, false, err
 		}
 	}
@@ -1027,7 +1296,12 @@ status=EXCLUDED.status,approved_at=EXCLUDED.approved_at`,
 		institutionID, legacyOpenSessionID, now); err != nil {
 		return nil, false, err
 	}
+	if err := execSeed(ctx, tx, "close open demo sessions", closeOpenDemoSessionsQuery,
+		institutionID, now); err != nil {
+		return nil, false, err
+	}
 	for _, session := range plan.sessions {
+		sessionLatitude, sessionLongitude, sessionRadius := sessionLocationArgs(session)
 		if err := execSeed(ctx, tx, "lecture session "+session.id, `
 INSERT INTO lecture_sessions(id,institution_id,offering_id,venue_id,timetable_id,started_by_user_id,
 started_at,ended_at,latitude,longitude,radius_meters,rotating_code,static_code,code_expires_at,late_after_min)
@@ -1038,8 +1312,8 @@ started_at=EXCLUDED.started_at,ended_at=EXCLUDED.ended_at,latitude=EXCLUDED.lati
 longitude=EXCLUDED.longitude,radius_meters=EXCLUDED.radius_meters,rotating_code=true,
 static_code=NULL,code_expires_at=NULL,late_after_min=EXCLUDED.late_after_min`,
 			session.id, institutionID, session.offeringID, session.venueID, session.timetable,
-			session.lecturerID, session.startedAt, session.endedAt, session.latitude,
-			session.longitude, session.radius, session.lateAfter); err != nil {
+			session.lecturerID, session.startedAt, session.endedAt, sessionLatitude,
+			sessionLongitude, sessionRadius, session.lateAfter); err != nil {
 			return nil, false, err
 		}
 	}
@@ -1101,16 +1375,26 @@ INSERT INTO device_heartbeats(institution_id,device_id,heartbeat_at) VALUES($1,$
 		}
 	}
 	for _, checkin := range plan.webCheckins {
-		venue := venueByID(plan.venues, sessionByID(plan.sessions, checkin.sessionID).venueID)
+		var latitude, longitude, accuracy, distance any
+		if checkin.position != nil {
+			latitude, longitude = checkin.position.latitude, checkin.position.longitude
+			accuracy, distance = checkin.position.accuracy, checkin.position.distance
+		}
+		// Every seeded check-in carries a device hash. Device binding, not
+		// distance, is what now stops one handset checking in a row of
+		// friends, so a NULL hash would seed data the API would refuse to
+		// create.
 		if err := execSeed(ctx, tx, "web check-in "+checkin.sessionID, `
 INSERT INTO web_checkins(institution_id,session_id,student_record_id,latitude,longitude,
 accuracy_meters,distance_meters,device_hash,on_roster,status,created_at)
-VALUES($1,$2,$3,$4,$5,5,2,NULL,$6,$7,$8)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 ON CONFLICT(session_id,student_record_id) DO UPDATE SET latitude=EXCLUDED.latitude,
 longitude=EXCLUDED.longitude,accuracy_meters=EXCLUDED.accuracy_meters,
-distance_meters=EXCLUDED.distance_meters,on_roster=EXCLUDED.on_roster,status=EXCLUDED.status,
+distance_meters=EXCLUDED.distance_meters,device_hash=EXCLUDED.device_hash,
+on_roster=EXCLUDED.on_roster,status=EXCLUDED.status,
 created_at=EXCLUDED.created_at`,
-			institutionID, checkin.sessionID, checkin.studentID, venue.lat, venue.lng,
+			institutionID, checkin.sessionID, checkin.studentID, latitude, longitude,
+			accuracy, distance, studentDeviceHash(checkin.studentID),
 			checkin.onRoster, checkin.status, checkin.at); err != nil {
 			return err
 		}
@@ -1251,9 +1535,35 @@ func execSeed(ctx context.Context, tx pgx.Tx, label, query string, args ...any) 
 
 func (plan seedPlan) validate() error {
 	if len(plan.faculties) != 2 || len(plan.departments) != 4 || len(plan.programmes) != 4 ||
-		len(plan.courses) < 8 || len(plan.courses) > 12 || len(plan.offerings) < 10 ||
-		len(plan.students) < 30 || len(plan.students) > 50 || len(plan.venues) < 3 {
+		len(plan.courses) < 55 || len(plan.courses) > 70 || len(plan.offerings) != len(plan.courses) ||
+		len(plan.students) < 55 || len(plan.students) > 70 || len(plan.venues) < 3 {
 		return errors.New("demo seed plan has an invalid organization, course, offering, student, or venue count")
+	}
+	codes := make(map[string]bool, len(plan.courses))
+	general := 0
+	for _, course := range plan.courses {
+		if codes[course.code] {
+			return fmt.Errorf("duplicate demo course code %q", course.code)
+		}
+		codes[course.code] = true
+		if course.kind == "general" {
+			general++
+		}
+	}
+	if general < 20 {
+		return fmt.Errorf("demo seed plan has %d general courses, want at least 20", general)
+	}
+	levels := make(map[int]bool, 5)
+	for _, offering := range plan.offerings {
+		if offering.level < 100 || offering.level > 500 || offering.level%100 != 0 {
+			return fmt.Errorf("demo offering %s has an invalid level %d", offering.id, offering.level)
+		}
+		levels[offering.level] = true
+	}
+	for _, level := range []int{200, 300, 400, 500} {
+		if !levels[level] {
+			return fmt.Errorf("demo seed plan has no offering at %d level", level)
+		}
 	}
 	modes := make(map[string]bool)
 	for _, offering := range plan.offerings {
@@ -1281,17 +1591,29 @@ func (plan seedPlan) validate() error {
 	if claimed < 8 || unclaimed < 20 {
 		return errors.New("demo seed plan must include claimed and unclaimed student records")
 	}
-	openVenues := map[string]bool{}
+	// No open classes. Starting one is the lecturer's job, and it is also what
+	// supplies the venue's coordinates, so the seed must not pre-empt it or
+	// occupy the venue under the one-open-session-per-venue rule.
 	for _, session := range plan.sessions {
 		if session.endedAt == nil {
-			if openVenues[session.venueID] {
-				return errors.New("demo seed plan has more than one open session at a venue")
-			}
-			openVenues[session.venueID] = true
+			return fmt.Errorf("demo session %s is still open; the seed must leave no live classes", session.id)
+		}
+		if session.endedAt.Before(session.startedAt) {
+			return fmt.Errorf("demo session %s ends before it starts", session.id)
 		}
 	}
-	if len(openVenues) < 2 {
-		return errors.New("demo seed plan must include live sessions at two venues")
+	uncalibrated := 0
+	for _, venue := range plan.venues {
+		if !venue.located {
+			uncalibrated++
+			continue
+		}
+		if venue.radius < 1 {
+			return fmt.Errorf("demo venue %s has coordinates but no usable radius", venue.id)
+		}
+	}
+	if uncalibrated == 0 {
+		return errors.New("demo seed plan must include a venue with no location, so the lecturer-device capture can be exercised")
 	}
 	for _, registration := range plan.registrations {
 		if registration.status != "approved" && registration.status != "pending" {
@@ -1336,6 +1658,11 @@ func printVenueConfiguration(plan seedPlan) {
 	fmt.Printf("\nSeed venue origin: latitude %.7f, longitude %.7f (radius %d m)\n",
 		plan.config.originLatitude, plan.config.originLongitude, plan.config.venueRadius)
 	for _, venue := range plan.venues {
+		if !venue.located {
+			fmt.Printf("  %s: no location set - the first lecturer to start a class here sets it\n",
+				venue.name)
+			continue
+		}
 		fmt.Printf("  %s: latitude %.7f, longitude %.7f, radius %d m\n",
 			venue.name, venue.lat, venue.lng, venue.radius)
 	}
@@ -1343,6 +1670,31 @@ func printVenueConfiguration(plan seedPlan) {
 		fmt.Println("WARNING: No SEED_ORIGIN_LAT/SEED_ORIGIN_LNG configured. Check-ins from your real location will be recorded as location_unverified until both are set.")
 	}
 	fmt.Println("Set SEED_ORIGIN_LAT and SEED_ORIGIN_LNG (and optionally SEED_VENUE_RADIUS_M) in .env, then run `go run ./scripts/seed --update-venues` or `docker compose run --rm seed seed --update-venues` to update venues and open-session snapshots.")
+}
+
+// venueLocationArgs renders a venue's position for SQL, as NULLs when the room
+// has never been stood in.
+func venueLocationArgs(venue seedVenue) (any, any, any) {
+	if !venue.located {
+		return nil, nil, nil
+	}
+	return venue.lat, venue.lng, venue.radius
+}
+
+// sessionLocationArgs renders a session's geofence snapshot for SQL.
+func sessionLocationArgs(session seedSession) (any, any, any) {
+	if !session.located {
+		return nil, nil, nil
+	}
+	return session.latitude, session.longitude, session.radius
+}
+
+// studentDeviceHash is a stable per-student stand-in for the hash a browser
+// would send. One device per student keeps the seeded rows consistent with the
+// one-student-per-device-per-session rule.
+func studentDeviceHash(studentID string) []byte {
+	digest := sha256.Sum256([]byte("seed-device:" + studentID))
+	return digest[:]
 }
 
 func seedID(value int) string {

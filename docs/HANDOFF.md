@@ -28,12 +28,14 @@ that every phase or database-backed behavior is complete. See
   related RBAC tests and documentation.
 - A transactional, repeatable, date-relative `scripts/seed` dataset with two
   faculties, four departments/programmes, a prior and a current semester under
-  the current academic session, ten courses/offerings (in the current semester)
-  spanning all registration modes, fourteen lecturer accounts/staff records
-  (one assigned per department plus ten spare across departments for the
-  lecturer picker), 48 students (16 claimed), three venues/scanners, weekly
-  timetables, open and historical sessions, registrations, and varied
-  attendance/check-in/scan/override states.
+  the current academic session, 60 courses/offerings (in the current semester)
+  spanning all registration modes - the ten hand-written ones plus fifty more,
+  twenty of them general-studies, over 200-500 level and shared across all
+  fourteen lecturers - fourteen lecturer accounts/staff records, 60 students
+  (40 claimed) across 100-500 level, four venues/scanners of which one has no
+  coordinates, weekly timetables, nine historical sessions and no open ones,
+  registrations, and varied attendance/check-in/scan/override states including
+  a check-in with no position and one flagged location_unverified.
   It also creates pending invitation, signup, and scanner-enrolment records.
   Credentials and unclaimed matric/email pairs are printed; new scanner keys
   and the invitation token appear only on first creation. `--reset` is scoped
@@ -228,11 +230,40 @@ that every phase or database-backed behavior is complete. See
 
   `gofmt -l` (excluding `.claude/worktrees`), `go vet ./...`, `go build ./...`
   and `go test ./...` pass; `npx @redocly/cli lint api/openapi.yaml` is valid
-  with the four existing recommended-rule warnings. **Nothing is verified
-  against PostgreSQL**: migration `00008`, the session-start calibration
-  transaction, `RecentreSession`, the device-binding query, the
-  `lecturerTeachesAtVenue` authorization path and the report query's derived
-  column are all unexercised. `sqlc generate` was broken on the pristine tree
+  with the four existing recommended-rule warnings.
+
+  **This slice is now verified against PostgreSQL** (Docker started, migrations
+  run, seed loaded, API exercised with curl): migration `00008` applied and all
+  seven columns are nullable with the partial index present; starting a class at
+  an uncalibrated room returned `location_source: "device"`, centred the session
+  on the lecturer's fix with the derived 75 m radius, wrote the coordinates back
+  to the venue and audited `venue.location_captured` with the session id;
+  `POST /sessions/{id}/location` produced `unchanged` at 3 m, `refined` at 40 m
+  (recentring session and venue), `rejected_distance` at 1072 m with the centre
+  untouched, `rejected_accuracy` at 400 m, and 400 with no accuracy; a check-in
+  with no position was recorded with `distance_meters: null`; a second student
+  reusing the first student's `device_hash` was refused `device_already_used`
+  (409); a 1.1 km fix with 8 m accuracy was recorded with
+  `location_unverified: true` and the session report classified it
+  `web_only_unverified`/`location_unverified` while the unscanned student showed
+  `no_fingerprint`; and `POST /venues/{id}/location` returned 200 for the
+  lecturer who teaches at the venue, 403 for a venue they do not teach at, and
+  400 `location_too_inaccurate` for a 250 m fix.
+
+  **Bug found by that live run, fixed across the codebase:** pgx encodes a
+  `[]byte` parameter as `bytea`, so every raw-SQL audit insert that passed a
+  `json.Marshal` result into a `$n::jsonb` placeholder failed at runtime with
+  `invalid input syntax for type json (SQLSTATE 22P02)`. It is a one-line defect
+  per site (`string(details)`), and ten sites had it: the new
+  `calibrateVenue`, `venue.created`/`venue.updated`/`venue.location_captured`
+  in `internal/catalogue/postgres/venue_management.go`, `academic_audit.go`,
+  `offering.updated` in `catalogue/postgres/store.go`, the teaching-request
+  insert in `offering_workflow.go`, `internal/devices/postgres.go`,
+  `internal/imports/postgres/store.go` and
+  `internal/auth/signup_requests_postgres.go`. Only the venue-location ones were
+  part of this slice; the rest were pre-existing and would have failed on first
+  use. A site that builds its JSON with `fmt.Sprintf` into a string
+  (`role_assignments_postgres.go`) was already correct. `sqlc generate` was broken on the pristine tree
   (v1.29.0, "column reference institution_id is ambiguous" at
   `db/queries/identity.sql:103`); `AutoRegisterClaimedStudent`'s CTE columns are
   now qualified and `SetCourseRegistrationStatus` uses `sqlc.arg(approved_at)`,

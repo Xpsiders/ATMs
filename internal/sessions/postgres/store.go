@@ -334,7 +334,7 @@ func calibrateVenue(
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details,created_at)
 		VALUES($1,$2,'venue.location_captured','venue',$3,$4::jsonb,$5)`,
-		institutionID, actorID, venueID.String(), details,
+		institutionID, actorID, venueID.String(), string(details),
 		pgtype.Timestamptz{Time: changedAt.UTC(), Valid: true}); err != nil {
 		return fmt.Errorf("audit venue calibration: %w", err)
 	}

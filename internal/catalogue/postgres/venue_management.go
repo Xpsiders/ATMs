@@ -60,7 +60,7 @@ func (s *Store) CreateVenue(ctx context.Context, institutionID, userID string, i
 		return nil, fmt.Errorf("encode venue audit: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
-		VALUES($1,$2,'venue.created','venue',$3,$4::jsonb)`, tenant, actor, id, fields); err != nil {
+		VALUES($1,$2,'venue.created','venue',$3,$4::jsonb)`, tenant, actor, id, string(fields)); err != nil {
 		return nil, fmt.Errorf("audit venue creation: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -173,7 +173,7 @@ func (s *Store) UpdateVenue(ctx context.Context, institutionID, userID, venueID 
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
 		VALUES($1,$2,'venue.updated','venue',$3,jsonb_build_object('fields',$4::jsonb))`,
-		tenant, actor, id, fields); err != nil {
+		tenant, actor, id, string(fields)); err != nil {
 		return nil, fmt.Errorf("audit venue update: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -255,7 +255,7 @@ func (s *Store) CaptureVenueLocation(
 		return nil, fmt.Errorf("encode venue location audit: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_log(institution_id,actor_user_id,action,resource_type,resource_id,details)
-		VALUES($1,$2,'venue.location_captured','venue',$3,$4::jsonb)`, tenant, actor, id, fields); err != nil {
+		VALUES($1,$2,'venue.location_captured','venue',$3,$4::jsonb)`, tenant, actor, id, string(fields)); err != nil {
 		return nil, fmt.Errorf("audit venue location capture: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

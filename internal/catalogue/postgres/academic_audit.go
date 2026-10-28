@@ -38,7 +38,7 @@ func auditAcademicResource(
 	_, err := execer.Exec(ctx, `INSERT INTO audit_log(
 		institution_id,actor_user_id,action,resource_type,resource_id,details
 	) VALUES($1,$2,$3,$4,$5::text,$6::jsonb)`,
-		tenant, actor, resourceType+"."+action, resourceType, resourceID, details)
+		tenant, actor, resourceType+"."+action, resourceType, resourceID, string(details))
 	if err != nil {
 		return fmt.Errorf("audit %s %s: %w", resource, action, err)
 	}
