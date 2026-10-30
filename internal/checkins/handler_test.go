@@ -41,7 +41,8 @@ func TestCheckinHandlerReturnsErrorEnvelopeAndSuccessShape(t *testing.T) {
 	}}
 	requestBody := func(code string) []byte {
 		data, marshalErr := json.Marshal(checkins.Request{
-			SessionID: store.session.ID, Code: code, DeviceHash: "device-aaaa",
+			SessionID: store.session.ID, Code: code, Latitude: floatPtr(0), Longitude: floatPtr(0),
+			Accuracy: floatPtr(5), DeviceHash: "device-aaaa",
 		})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
@@ -70,6 +71,16 @@ func TestCheckinHandlerReturnsErrorEnvelopeAndSuccessShape(t *testing.T) {
 		t.Fatalf("valid response = %d %s", validResponse.Code, validResponse.Body.String())
 	}
 
+	missingLocation := httptest.NewRequest(http.MethodPost, "/checkins", strings.NewReader(
+		`{"session_id":"2f4e4ed0-490c-4cba-9343-62b0744d6ba7","code":"`+validCode+`","device_hash":"device-bbbb"}`))
+	missingLocation = missingLocation.WithContext(auth.WithPrincipal(missingLocation.Context(), principal))
+	missingLocationResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingLocationResponse, missingLocation)
+	if missingLocationResponse.Code != http.StatusBadRequest ||
+		!strings.Contains(missingLocationResponse.Body.String(), `"code":"location_required"`) {
+		t.Fatalf("missing location response = %d %s", missingLocationResponse.Code, missingLocationResponse.Body.String())
+	}
+
 	unknown := httptest.NewRequest(http.MethodPost, "/checkins", strings.NewReader(`{"session_id":"2f4e4ed0-490c-4cba-9343-62b0744d6ba7","code":"123456","device_hash":"device-aaaa","unexpected":true}`))
 	unknown = unknown.WithContext(auth.WithPrincipal(unknown.Context(), principal))
 	unknownResponse := httptest.NewRecorder()
@@ -80,3 +91,5 @@ func TestCheckinHandlerReturnsErrorEnvelopeAndSuccessShape(t *testing.T) {
 }
 
 var _ checkins.Store = (*fakeCheckinStore)(nil)
+
+func floatPtr(value float64) *float64 { return &value }

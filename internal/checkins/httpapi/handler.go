@@ -31,10 +31,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusForbidden, "student_account_required", "Only a student account can check in", nil)
 		return
 	}
-	// Location is optional: a student whose browser denies the position, or
-	// whose handset cannot get a lock indoors, still checks in. The device
-	// hash is required, because it is what stops one phone checking in a
-	// whole row of friends.
+	// A complete GPS fix is required as evidence, but an outside-radius fix
+	// does not deny an otherwise valid code check-in.
 	var request struct {
 		SessionID  string   `json:"session_id" validate:"required,uuid"`
 		Code       string   `json:"code" validate:"required,len=6,numeric"`
@@ -77,6 +75,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"institution_id", principal.Identity.InstitutionID,
 				"session_id", request.SessionID,
 			)
+		case checkins.ErrLocationRequired:
+			status = http.StatusBadRequest
 		}
 		httpx.WriteError(w, status, string(code), checkinErrorMessage(code), nil)
 		return
@@ -96,6 +96,8 @@ func checkinErrorMessage(code checkins.ErrorCode) string {
 		return "Student has already checked in"
 	case checkins.ErrDeviceAlreadyUsed:
 		return "This device has already checked in another student for this session"
+	case checkins.ErrLocationRequired:
+		return "GPS latitude, longitude, and accuracy are required"
 	default:
 		return "Check-in request is invalid"
 	}

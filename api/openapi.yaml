@@ -310,7 +310,7 @@ paths:
                         session_id: {type: string, format: uuid}
                         date: {type: string, format: date}
                         status: {type: string, enum: [present, late, absent, excused]}
-                        classification: {type: string, enum: [verified, present_no_web_log, web_only_unverified, absent, excused]}
+                        classification: {type: string, enum: [verified, present_no_web_log, proxy, absent, excused]}
                         override_reason: {type: [string, "null"]}
         "400":
           description: offering_id is missing or is not a UUID.
@@ -502,6 +502,41 @@ paths:
                 $ref: "#/components/schemas/ErrorEnvelope"
         "500":
           $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createVenue
+      summary: Create an institution venue
+      description: >-
+        Scoped institution, faculty, and department administrators can create
+        venues within their authority. Only a name is required: venue
+        coordinates are optional metadata. Student web check-ins still require
+        their own GPS fix. Set venue coordinates later, if at all, with
+        POST /venues/{id}/location.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 200}
+                latitude: {type: number, minimum: -90, maximum: 90}
+                longitude: {type: number, minimum: -180, maximum: 180}
+                radius_meters:
+                  type: integer
+                  minimum: 1
+                  maximum: 2000
+                  default: 75
+                  description: Optional, and only meaningful alongside coordinates. Defaults to 75 metres, which covers a lecture theatre plus ordinary consumer-GPS drift. Use POST /venues/{id}/location to set the coordinates from a position captured inside the room instead of typing them.
+                department_id: {type: string, format: uuid}
+      responses:
+        "201": {description: Venue created., content: {application/json: {schema: {type: object}}}}
+        "400": {$ref: "#/components/responses/InvalidJSON"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Caller cannot manage venues., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
+        "500": {$ref: "#/components/responses/InternalError"}
   /venues/{id}/scanner-status:
     get:
       operationId: getVenueScannerStatus
@@ -534,40 +569,6 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {description: Caller does not have a venue-listing role., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "404": {description: Venue not found in this institution., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
-        "500": {$ref: "#/components/responses/InternalError"}
-    post:
-      operationId: createVenue
-      summary: Create an institution venue
-      description: >-
-        Scoped institution, faculty, and department administrators can create
-        venues within their authority. Only a name is required: a venue is a
-        named room, and coordinates are optional metadata that never gate a
-        check-in. Set them later, if at all, with POST /venues/{id}/location.
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name: {type: string, minLength: 1, maxLength: 200}
-                latitude: {type: number, minimum: -90, maximum: 90}
-                longitude: {type: number, minimum: -180, maximum: 180}
-                radius_meters:
-                  type: integer
-                  minimum: 1
-                  maximum: 2000
-                  default: 75
-                  description: Optional, and only meaningful alongside coordinates. Defaults to 75 metres, which covers a lecture theatre plus ordinary consumer-GPS drift. Use POST /venues/{id}/location to set the coordinates from a position captured inside the room instead of typing them.
-                department_id: {type: string, format: uuid}
-      responses:
-        "201": {description: Venue created., content: {application/json: {schema: {type: object}}}}
-        "400": {$ref: "#/components/responses/InvalidJSON"}
-        "401": {$ref: "#/components/responses/Unauthorized"}
-        "403": {description: Caller cannot manage venues., content: {application/json: {schema: {$ref: "#/components/schemas/ErrorEnvelope"}}}}
         "500": {$ref: "#/components/responses/InternalError"}
   /venues/{id}:
     parameters:
@@ -1405,7 +1406,12 @@ paths:
     post:
       operationId: createWebCheckin
       summary: Check in to one specific open session
-      description: The session ID is mandatory; the supplied code is verified only for that session.
+      description: >-
+        The session ID is mandatory and the supplied code is verified only for
+        that session. A complete GPS fix (latitude, longitude, and accuracy) is
+        also required. A valid code records the check-in even when the location
+        is outside the venue radius; that location is evidence for the lecturer,
+        not a rejection rule.
       security:
         - BearerAuth: []
       requestBody:
@@ -1420,15 +1426,15 @@ paths:
               lat: 6.5244
               lng: 3.3792
               accuracy: 8.5
-              device_hash: optional-client-device-fingerprint
+              device_hash: student-browser-device-fingerprint
       responses:
         "201":
           description: >-
-            Check-in recorded. Location never refuses a check-in: a missing,
-            vague, or distant position is recorded and, where there was a
-            position to compare, flagged with `location_unverified` for the
-            lecturer. Presence is proved by the rotating code and the device
-            binding instead.
+            Check-in recorded after a valid code and complete GPS fix. An
+            outside-radius fix does not reject the check-in. If there is no
+            matching fingerprint scan, the attendance report classifies the
+            web-only row as `proxy` for lecturer review; a matching scan counts
+            the student present regardless of the phone's location.
           content:
             application/json:
               schema:
@@ -1442,8 +1448,8 @@ paths:
                 location_unverified: false
         "400":
           description: >-
-            Invalid JSON, a missing or malformed `device_hash`, a wrong or
-            expired code, or a student not on the roster.
+            Invalid JSON, missing GPS latitude/longitude/accuracy, a malformed
+            device hash, a wrong or expired code, or a student not on the roster.
           content:
             application/json:
               schema:
@@ -1454,6 +1460,12 @@ paths:
                     error:
                       code: wrong_or_expired_code
                       message: Session code is wrong or expired
+                      details: {}
+                locationRequired:
+                  value:
+                    error:
+                      code: location_required
+                      message: GPS latitude, longitude, and accuracy are required
                       details: {}
                 notOnRoster:
                   value:
@@ -1501,9 +1513,10 @@ paths:
       description: >-
         The venue location and radius are copied by default; explicitly
         supplied values adjust the session snapshot. A venue with no stored
-        coordinates starts a session with none, which is valid — location is
-        advisory and never gates a check-in. Only assigned offering lecturers
-        and coordinators may start sessions.
+        coordinates starts a session with none, which is valid. Student web
+        check-ins still require a GPS fix, but distance from the saved venue is
+        evidence only and does not override a valid session code. Only assigned
+        offering lecturers and coordinators may start sessions.
       security:
         - BearerAuth: []
       requestBody:
@@ -1691,7 +1704,7 @@ paths:
                         matric_no: {type: string}
                         display_name: {type: string}
                         status: {type: string, enum: [present, late, absent, excused]}
-                        classification: {type: string, enum: [verified, present_no_web_log, web_only_unverified, absent, excused]}
+                        classification: {type: string, enum: [verified, present_no_web_log, proxy, absent, excused]}
                         on_roster: {type: boolean}
                         has_web_checkin: {type: boolean}
                         has_scan: {type: boolean}
@@ -1929,7 +1942,7 @@ paths:
     post:
       operationId: markSessionScannerUnavailable
       summary: Record scanner unavailability for an open session
-      description: Assigned lecturer or coordinator can manually declare a scanner outage. The state update and audit record are atomic; reports treat web check-ins during the resulting full-session offline interval as web_only_unverified.
+      description: Assigned lecturer or coordinator can manually declare a scanner outage. The state update and audit record are atomic; reports classify web-only check-ins during the outage as proxy with reason scanner_unavailable.
       security:
         - BearerAuth: []
       parameters:
@@ -3643,21 +3656,18 @@ components:
           type: boolean
         classification:
           type: string
-          enum: [verified, present_no_web_log, web_only_unverified, absent, excused]
+          enum: [verified, present_no_web_log, proxy, absent, excused]
         status:
           type: string
         reason:
           type: string
           description: >-
-            Why a web_only_unverified row could not be verified:
-            `scanner_unavailable` or `scanner_offline` when no scanner covered
-            the check-in, `location_unverified` when the student's phone
-            reported a fix further from the venue than its own accuracy can
-            explain, or `no_fingerprint` when a working scanner was available
-            and the student checked in on the web without scanning. None of
-            these is an accusation: the check-in still passed a live rotating
-            code and the one-student-per-device binding. Confirm or clear them
-            with an attendance override.
+            Evidence explaining a `proxy` classification when the student has
+            a web check-in but no fingerprint scan. Values include
+            `scanner_unavailable`, `scanner_offline`, `location_unverified`,
+            or `no_fingerprint`. A matching fingerprint scan takes precedence
+            over location and classifies the student as present; a lecturer may
+            also confirm or clear the report with an attendance override.
     RosterPage:
       type: object
       required: [session_id, items, limit, offset, has_more]
@@ -3794,7 +3804,7 @@ components:
           description: Present for student roles; identifies the locked academic level.
     CheckinRequest:
       type: object
-      required: [session_id, code, device_hash]
+      required: [session_id, code, lat, lng, accuracy, device_hash]
       additionalProperties: false
       properties:
         session_id:
@@ -3807,21 +3817,16 @@ components:
           type: number
           minimum: -90
           maximum: 90
-          description: >-
-            Optional. Send it when the browser offers a position, omit it when
-            the student denies permission or no fix is available. It is never a
-            reason to refuse the check-in.
+          description: Required student GPS latitude. The valid session code remains decisive; distance does not reject a check-in.
         lng:
           type: number
           minimum: -180
           maximum: 180
-          description: Optional; send it together with lat.
+          description: Required student GPS longitude; send together with lat and accuracy.
         accuracy:
           type: number
           minimum: 0
-          description: >-
-            The device's own reported accuracy in metres, when lat/lng are
-            sent. It widens the tolerance rather than narrowing it.
+          description: Required GPS accuracy in metres. It is retained as evidence and does not determine whether a valid code is accepted.
         device_hash:
           type: string
           minLength: 8
@@ -3848,18 +3853,15 @@ components:
         distance_meters:
           type: [number, "null"]
           description: >-
-            Null when the venue has no stored coordinates or the student sent
-            no position; there is then nothing to measure against.
+            Null when the venue has no stored coordinates; the required student position is still recorded.
         location_unverified:
           type: boolean
           description: >-
             True when a position was compared against the venue and landed
             beyond the radius plus the phone's own reported accuracy. The
-            attendance is still recorded; the session report shows it as
-            `web_only_unverified` with reason `location_unverified` until a
-            fingerprint scan or a lecturer override confirms it. False when
-            there was no position to compare — an absent signal is not evidence
-            against the student.
+            attendance is still recorded; a web-only row is classified as
+            `proxy` until a matching fingerprint scan or lecturer override
+            confirms it.
     StartSessionRequest:
       type: object
       required: [offering_id, venue_id]

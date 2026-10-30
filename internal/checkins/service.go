@@ -38,8 +38,8 @@ type CheckinRecord struct {
 	InstitutionID string
 	SessionID     string
 	StudentID     string
-	// Fix and DistanceMeters are nil when the student sent no position, or
-	// when the venue has no centre to measure against.
+	// Fix is nil only for records created under earlier behavior. DistanceMeters
+	// is nil when the venue has no centre to measure against.
 	Fix            *Fix
 	DistanceMeters *float64
 	DeviceHash     []byte
@@ -48,18 +48,16 @@ type CheckinRecord struct {
 }
 
 type Request struct {
-	SessionID string `json:"session_id"`
-	Code      string `json:"code"`
-	// Latitude, Longitude, and Accuracy are optional. The browser may refuse
-	// to supply a position, and that is not a reason to refuse the check-in.
+	SessionID  string   `json:"session_id"`
+	Code       string   `json:"code"`
 	Latitude   *float64 `json:"lat"`
 	Longitude  *float64 `json:"lng"`
 	Accuracy   *float64 `json:"accuracy"`
 	DeviceHash string   `json:"device_hash"`
 }
 
-// fix builds the optional position from the request. A position needs both
-// coordinates; accuracy defaults to zero, which grants no extra allowance.
+// fix builds a position when both coordinates are present. The service rejects
+// requests missing any of the coordinates or accuracy before using this value.
 func (r Request) fix() *Fix {
 	if r.Latitude == nil || r.Longitude == nil {
 		return nil
@@ -76,12 +74,11 @@ type CheckinResult struct {
 	Status       string `json:"status"`
 	OnRoster     bool   `json:"on_roster"`
 	AccuracyPoor bool   `json:"accuracy_poor"`
-	// DistanceMeters is null when there was no position to measure, either
-	// because the student sent none or because the venue has no centre.
+	// DistanceMeters is null when the venue has no centre to measure against.
 	DistanceMeters *float64 `json:"distance_meters"`
 	// LocationUnverified tells the student their attendance was recorded on a
-	// fix their phone's own error cannot explain, so it still needs the
-	// scanner or the lecturer to confirm it.
+	// fix their phone's own error cannot explain. A fingerprint scan still
+	// confirms attendance regardless of this location signal.
 	LocationUnverified bool `json:"location_unverified"`
 }
 
@@ -134,6 +131,9 @@ func (s *Service) Checkin(ctx context.Context, institutionID, studentID string, 
 	}
 	if !codeValid {
 		return CheckinResult{}, ErrWrongCode, nil
+	}
+	if request.Latitude == nil || request.Longitude == nil || request.Accuracy == nil {
+		return CheckinResult{}, ErrLocationRequired, nil
 	}
 	registered, err := s.store.IsRegistered(ctx, institutionID, session.ID, studentID)
 	if err != nil {

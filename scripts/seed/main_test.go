@@ -509,12 +509,12 @@ func TestAttendanceFixturesCoverReportStatesAndBelowThreshold(t *testing.T) {
 	if len(plan.sessions) > 7 {
 		for _, checkin := range plan.webCheckins {
 			if checkin.sessionID == plan.sessions[7].id && !scanByKey[checkin.sessionID+":"+checkin.studentID] {
-				outcomes["web_only_unverified"] = true
+				outcomes["proxy_web_only"] = true
 			}
 		}
 	}
 	for _, expected := range []string{
-		"verified", "web_only_no_fingerprint", "scan_only", "absent", "late", "override_reason", "web_only_unverified",
+		"verified", "web_only_no_fingerprint", "scan_only", "absent", "late", "override_reason", "proxy_web_only",
 	} {
 		if !outcomes[expected] {
 			t.Errorf("attendance fixture missing state %q (sessions found=%d)", expected, len(sessionByID))

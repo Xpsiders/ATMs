@@ -106,7 +106,7 @@ func TestAttendanceOverridesWinAndUnverifiedWebCheckinIsClassified(t *testing.T)
 	}
 	if len(items) != 2 || items[0].Status != "excused" ||
 		items[0].Classification != reports.Classification("excused") || items[0].OverrideReason != "Medical" ||
-		items[1].Status != "late" || items[1].Classification != reports.WebOnlyUnverified {
+		items[1].Status != "late" || items[1].Classification != reports.Proxy {
 		t.Fatalf("attendance history=%+v", items)
 	}
 	store.approved = false

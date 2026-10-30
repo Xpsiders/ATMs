@@ -61,6 +61,12 @@ func TestScanIdempotencyAndNoActiveSession(t *testing.T) {
 	if !errors.Is(err, scans.ErrNoActiveSession) || result.ErrorCode != "no_active_session" {
 		t.Fatalf("no-session result = %+v, %v", result, err)
 	}
+	store.sessionFound = true
+	store.studentFound = false
+	result, err = service.Process(context.Background(), device, scans.ScanItem{SlotNumber: 1, Confidence: .98})
+	if !errors.Is(err, scans.ErrInvalidSlot) || result.ErrorCode != "invalid_slot" || store.insertCalls != 1 {
+		t.Fatalf("unassigned student-record slot result = %+v, %v; inserts=%d", result, err, store.insertCalls)
+	}
 }
 
 func TestLateSyncedScanUsesSessionActiveAtClientScanTime(t *testing.T) {

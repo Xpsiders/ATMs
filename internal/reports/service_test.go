@@ -123,7 +123,7 @@ func TestSessionReportUsesCoverageAndIncludesUnrosteredStudents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if page.ScannerCoverage.State != reports.CoverageNone || len(page.Items) != 2 ||
-		page.Items[0].Classification != reports.WebOnlyUnverified || page.Items[0].Reason != "scanner_unavailable" ||
+		page.Items[0].Classification != reports.Proxy || page.Items[0].Reason != "scanner_unavailable" ||
 		page.Items[1].Classification != reports.PresentNoWebLog || page.Items[1].OnRoster {
 		t.Fatalf("report page = %+v", page)
 	}
@@ -178,7 +178,7 @@ func TestReportCSVIncludesClassificationAndEscapesFormulaCells(t *testing.T) {
 	page := reports.ReportPage{Items: []reports.StudentAttendance{{
 		StudentRecordID: "student-1", MatricNo: "=CMD()", DisplayName: "@formula",
 		DepartmentID: "dept-1", Level: 200, OnRoster: true,
-		Classification: reports.WebOnlyUnverified, Status: "present", Reason: "scanner_offline",
+		Classification: reports.Proxy, Status: "present", Reason: "scanner_offline",
 	}}}
 	if err := reports.WriteCSV(&output, page); err != nil {
 		t.Fatal(err)

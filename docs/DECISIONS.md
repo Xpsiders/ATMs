@@ -18,8 +18,9 @@ resolved.
   attended; `excused` remains in sessions held but does not count as attended.
   The below-threshold comparison is strict (`percentage < minimum`), so an
   exact threshold passes.
-- A web check-in in a session with no scanner is classified as `verified`;
-  without scanner evidence, it is the only available check-in method.
+- A web-only check-in is classified as `proxy` for lecturer review even when no
+  scanner is available. A fingerprint scan of the same student confirms
+  presence and takes precedence over web location evidence.
 - At exactly `late_after_min`, a check-in is on time; it becomes late only
   after that instant, matching the domain wording "past late_after_min".
 
@@ -153,11 +154,11 @@ resolved.
 
 ## Venue location and check-in geofence
 
-- **Location is evidence, never a gate.** Nothing refuses a check-in on
-  position any more: `outside_radius` is gone. Students were being denied
-  attendance for a hardware limit they cannot fix, and a cheap or indoor-bound
-  handset is not evidence of a proxy. A fix is recorded, compared, and where it
-  cannot be explained, flagged for the lecturer.
+- **A GPS fix is required for web check-in, but the code remains decisive.**
+  `POST /checkins` requires latitude, longitude, and reported accuracy in
+  addition to a valid session code. If the code is valid, an outside-radius fix
+  is recorded rather than rejected; GPS is evidence for the lecturer, not an
+  alternate attendance credential.
 - **Device binding replaces the geofence as the anti-proxy control.** One
   device may record at most one student per session; a second student from the
   same device is refused with `device_already_used` (409). `device_hash` is
@@ -205,9 +206,10 @@ resolved.
   is. Only a venue with no radius takes one derived from the captured accuracy.
 - **`location_unverified` means the phone's own error cannot explain the gap.**
   The allowance is the reported accuracy, capped at 250 metres past the radius.
-  Inside it, the fix is simply accepted and unflagged; beyond it, the check-in
-  is still recorded but reported as `web_only_unverified` with reason
-  `location_unverified` for the lecturer to confirm.
+  Inside it, the fix is accepted and unflagged; beyond it, the check-in is
+  still recorded. A web-only record is classified as `proxy` with reason
+  `location_unverified`; a matching fingerprint scan overrides distant GPS and
+  confirms the student as present.
 - Location trust is derived, not stored. The report recomputes it from the
   check-in's recorded `distance_meters` and `accuracy_meters` against the
   session's `radius_meters`, applying the same 250-metre cap as the service so
@@ -218,19 +220,20 @@ resolved.
   at the venue outranks any GPS reading, and a lecturer override after the
   session closes, which takes precedence over every other signal.
 
-## Attendance is never classified as a proxy
+## Web-only attendance review
 
-- There is no `suspected_proxy` classification. A web check-in with no
-  fingerprint, taken while a working scanner stood in the room, is reported as
-  `web_only_unverified` with reason `no_fingerprint`. Nothing the server
-  observes separates a stand-in from a queue at the sensor, a finger the sensor
-  will not read, or a student who did not know to scan, so the report states
-  what is missing and leaves the judgement to the lecturer, who can confirm or
-  clear it with an override.
+- Web-only attendance is classified as `proxy` for lecturer review regardless
+  of scanner availability; the attendance status remains `present` or `late`
+  because the student supplied a valid session code. The reason distinguishes
+  `scanner_unavailable`, `scanner_offline`, `location_unverified`, and
+  `no_fingerprint`. This is a review classification, not proof of who physically
+  submitted the request.
 - The check-in behind such a row is not unguarded: it passed a rotating code
   that is valid for 30 seconds by default (`CHECKIN_CODE_WINDOW_SECONDS`) and
   the one-student-per-device binding that stops a single handset signing in a
   row of friends. The window is deliberately short, because forwarding the code
   to an absent friend is the remaining gap and its lifetime is what bounds it.
-- The fingerprint scanner remains the only positive proof of presence, and an
-  override still outranks every other signal.
+- A fingerprint scan for an existing `student_records` row counts as present
+  without a web check-in; no claimed account is required. A matching scan
+  overrides a web-only proxy classification and distant phone GPS, while a
+  lecturer override still outranks every signal.

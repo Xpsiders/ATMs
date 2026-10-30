@@ -12,11 +12,11 @@ func TestClassificationMatrix(t *testing.T) {
 		status string
 	}{
 		{"web and scan", Record{OnRoster: true, HasWebCheckin: true, HasFingerprint: true, ScannerAvailable: true}, Verified, "present"},
-		{"web only with scanner", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true}, WebOnlyUnverified, "present"},
+		{"web only with scanner", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true}, Proxy, "present"},
 		{"scan only", Record{OnRoster: true, HasFingerprint: true, ScannerAvailable: true}, PresentNoWebLog, "present"},
 		{"absent", Record{OnRoster: true, ScannerAvailable: true}, Absent, "absent"},
-		{"web only without scanner", Record{OnRoster: true, HasWebCheckin: true}, Verified, "present"},
-		{"late web check-in", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true, WebStatus: "late"}, WebOnlyUnverified, "late"},
+		{"web only without scanner", Record{OnRoster: true, HasWebCheckin: true}, Proxy, "present"},
+		{"late web check-in", Record{OnRoster: true, HasWebCheckin: true, ScannerAvailable: true, WebStatus: "late"}, Proxy, "late"},
 		{"unrostered still reported", Record{HasFingerprint: true, ScannerAvailable: true}, PresentNoWebLog, "present"},
 		{"present override wins", Record{HasFingerprint: true, ScannerAvailable: true, OverrideStatus: "present"}, Verified, "present"},
 		{"absent override wins", Record{HasWebCheckin: true, ScannerAvailable: true, OverrideStatus: "absent"}, Absent, "absent"},
@@ -29,16 +29,16 @@ func TestClassificationMatrix(t *testing.T) {
 				State:            CoveragePartial,
 				OfflineIntervals: []OfflineInterval{{From: time.Unix(100, 0), To: time.Unix(130, 0)}},
 			},
-		}, WebOnlyUnverified, "present"},
+		}, Proxy, "present"},
 		{"web only when all scanners offline", Record{
 			OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
 			ScannerCoverage: ScannerCoverage{State: CoverageNone},
-		}, WebOnlyUnverified, "present"},
-		{"weak fix is unverified, not a suspected proxy", Record{
+		}, Proxy, "present"},
+		{"distant GPS makes web-only attendance proxy", Record{
 			OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
 			LocationUnverified: true,
-		}, WebOnlyUnverified, "present"},
-		{"a scan verifies a weak fix outright", Record{
+		}, Proxy, "present"},
+		{"fingerprint scan confirms presence despite distant web GPS", Record{
 			OnRoster: true, HasWebCheckin: true, HasFingerprint: true,
 			ScannerAvailable: true, LocationUnverified: true,
 		}, Verified, "present"},
@@ -167,8 +167,8 @@ func TestClassifyReportsLocationUnverifiedReason(t *testing.T) {
 		LocationUnverified: true,
 		ScannerCoverage:    ScannerCoverage{State: CoverageFull},
 	})
-	if outcome.Classification != WebOnlyUnverified || outcome.Reason != "location_unverified" {
-		t.Fatalf("Classify() = %+v, want web_only_unverified/location_unverified", outcome)
+	if outcome.Classification != Proxy || outcome.Reason != "location_unverified" {
+		t.Fatalf("Classify() = %+v, want proxy/location_unverified", outcome)
 	}
 	outcome = Classify(Record{
 		OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
@@ -180,18 +180,16 @@ func TestClassifyReportsLocationUnverifiedReason(t *testing.T) {
 	}
 }
 
-// A student who checked in on the web while a working scanner stood in the
-// room is reported as unverified with its own reason, never accused of a
-// proxy: the server cannot tell a stand-in from a finger the sensor would not
-// read, and the check-in still passed a live code and the device binding.
-func TestClassifyReportsMissingFingerprintWithoutAccusation(t *testing.T) {
+// Web-only attendance is marked as a proxy risk, with a reason describing the
+// evidence available to the lecturer.
+func TestClassifyReportsMissingFingerprintAsProxyRisk(t *testing.T) {
 	t.Parallel()
 	outcome := Classify(Record{
 		OnRoster: true, HasWebCheckin: true, ScannerAvailable: true,
 		ScannerCoverage: ScannerCoverage{State: CoverageFull},
 	})
-	if outcome.Classification != WebOnlyUnverified || outcome.Reason != "no_fingerprint" {
-		t.Fatalf("Classify() = %+v, want web_only_unverified/no_fingerprint", outcome)
+	if outcome.Classification != Proxy || outcome.Reason != "no_fingerprint" {
+		t.Fatalf("Classify() = %+v, want proxy/no_fingerprint", outcome)
 	}
 	if outcome.Status != "present" {
 		t.Fatalf("an unverified row should still count as present, got %q", outcome.Status)

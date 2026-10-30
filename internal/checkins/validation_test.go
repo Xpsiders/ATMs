@@ -58,6 +58,7 @@ func TestValidationOrderAndCodes(t *testing.T) {
 	}{
 		{"closed session before code", func(i *Input) { i.SessionOpen = false; i.CodeValid = false }, ErrSessionClosed},
 		{"wrong code before roster", func(i *Input) { i.CodeValid = false; i.OnRoster = false }, ErrWrongCode},
+		{"missing GPS fix", func(i *Input) { i.Fix = nil }, ErrLocationRequired},
 		{"not on roster", func(i *Input) { i.OnRoster = false }, ErrNotOnRoster},
 		{"duplicate before device", func(i *Input) { i.AlreadyChecked = true; i.DeviceUsed = true }, ErrAlreadyExists},
 		{"device already used", func(i *Input) { i.DeviceUsed = true }, ErrDeviceAlreadyUsed},
@@ -79,8 +80,8 @@ func TestValidationOrderAndCodes(t *testing.T) {
 	}
 }
 
-// Location is evidence, never a gate. However far out or however vague the
-// fix, the check-in is recorded; only the unverified flag changes.
+// Location is required as evidence but distance is never a gate. However far
+// out or however vague the fix, only the unverified flag changes.
 func TestValidationNeverRefusesOnLocation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -94,9 +95,7 @@ func TestValidationNeverRefusesOnLocation(t *testing.T) {
 		{"outside but the accuracy explains it", fixAt(0.001, 80), atVenue(), false, true},
 		{"outside and the accuracy cannot explain it", fixAt(0.001, 5), atVenue(), true, true},
 		{"absurd accuracy cannot buy unlimited slack", fixAt(0.01, 100_000), atVenue(), true, true},
-		{"no fix at all", nil, atVenue(), false, false},
 		{"venue has no coordinates", fixAt(0.5, 5), nil, false, false},
-		{"neither side has a position", nil, nil, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

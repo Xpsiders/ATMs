@@ -273,24 +273,26 @@ double quotes in `--data` JSON with single-quoted JSON strings.
 8. **Web check-in.** Use a student access token and an open session code:
 
    ```cmd
-   curl.exe -i -X POST http://localhost:8080/checkins -H "Authorization: Bearer STUDENT_ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"session_id\":\"SESSION_UUID\",\"code\":\"123456\",\"lat\":6.5244,\"lng\":3.3792,\"accuracy\":8.5}"
+   curl.exe -i -X POST http://localhost:8080/checkins -H "Authorization: Bearer STUDENT_ACCESS_TOKEN" -H "Content-Type: application/json" --data "{\"session_id\":\"SESSION_UUID\",\"code\":\"123456\",\"lat\":6.5244,\"lng\":3.3792,\"accuracy\":8.5,\"device_hash\":\"student-device-123\"}"
    ```
 
-   Replace the example code and coordinates with the actual code and a point
-   within the session radius. Expect `201` with `status`, `on_roster`,
-   `accuracy_poor`, `distance_meters`, and `location_unverified: false`. Try a
-   wrong/expired code (`wrong_or_expired_code`), an unregistered student under
-   `registered_only` (`not_on_roster`), an ended session (`session_closed`),
-   and repeating a successful check-in (`already_checked_in`, HTTP `409`).
+   Replace the example code and coordinates with the actual code and a GPS fix.
+   Expect `201` with `status`, `on_roster`, `accuracy_poor`,
+   `distance_meters`, and `location_unverified: false`. A successful web-only
+   check-in is classified as `proxy` in the session report until a matching
+   fingerprint scan confirms presence. Try a wrong/expired code
+   (`wrong_or_expired_code`), an unregistered student under `registered_only`
+   (`not_on_roster`), an ended session (`session_closed`), and repeating a
+   successful check-in (`already_checked_in`, HTTP `409`).
 
-   **Confirm location never refuses anyone.** Use the same open session and
-   valid code, but set `lat` and `lng` to the coordinates printed for **Far
+   **GPS is required, but the code remains decisive.** Use the same open session
+   and valid code, but set `lat` and `lng` to the coordinates printed for **Far
    Test Venue (5 km)** with a small `accuracy` such as `5`. Expect `201` with
-   `location_unverified: true`, not a `400`: a position the phone's own error
-   cannot explain is flagged for the lecturer, never refused. Omit `lat`, `lng`,
-   and `accuracy` entirely for another student and expect `201` with
-   `distance_meters: null`. Use a fresh registered student for each attempt
-   because check-ins are unique per student/session.
+   `location_unverified: true`, not a rejection: a valid code still records the
+   check-in, and the report classifies web-only attendance as `proxy` with
+   reason `location_unverified`. Omit any of `lat`, `lng`, or `accuracy` for
+   another student and expect `400 location_required`. Use a fresh registered
+   student for each attempt because check-ins are unique per student/session.
 
    **Test the poor-GPS tolerance.** Send a point just outside the session
    radius (the seed radius defaults to 150 metres, so about 0.0018 degrees of
@@ -307,11 +309,13 @@ double quotes in `--data` JSON with single-quoted JSON strings.
    treated as an opt-out.
 
    Then open `GET /sessions/{id}/live` (or the session report once closed) and
-   confirm the tolerated student appears as `web_only_unverified` with reason
-   `location_unverified`. A matching fingerprint
-   scan for that student must upgrade the row to `verified`, and a closed-session
+   confirm the web-only student appears as `proxy` with reason
+   `location_unverified` or `no_fingerprint`. A matching fingerprint scan for
+   that student must mark them present even if the web GPS is outside the venue;
+   with both signals the classification is `verified`. A fingerprint scan
+   without a web check-in is present as `present_no_web_log`. A closed-session
    `POST /sessions/{id}/overrides/bulk` with `status: present` must take
-   precedence over both.
+   precedence over all signals.
 
    **Recalibrate a room explicitly.** This is the "Recalibrate this room"
    action behind a `rejected_distance` outcome. As an administrator over the
@@ -451,8 +455,8 @@ curl.exe -i "http://localhost:8080/sessions/SESSION_UUID/roster-sheet?format=csv
 ```
 
 The scanner outage and fixed-code conversion each produce an audit entry.
-During the outage, web check-ins are classified `web_only_unverified`; the
-report includes scanner coverage state and offline intervals. The roster sheet
+During the outage, web-only check-ins are classified `proxy` with reason
+`scanner_unavailable`; the report includes scanner coverage state and offline intervals. The roster sheet
 is ordered and paginated. Both report routes support JSON, CSV, and PDF via the
 `format` query parameter. PDF output is limited to the requested page; use
 `limit` and `offset` for pagination, up to 200 rows per request.

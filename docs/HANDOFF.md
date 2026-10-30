@@ -184,16 +184,17 @@ that every phase or database-backed behavior is complete. See
   administrator captured venue coordinates; administrators are never in the
   room, so that flow could not work in practice.
 
-  Nothing refuses a check-in on position any more and `ErrOutsideRadius` /
-  `outside_radius` are deleted. `POST /checkins` takes `lat`, `lng`, and
-  `accuracy` as optional (the browser may refuse a position, and the venue may
-  have no centre) and requires `device_hash`: per-session device binding is now
-  the anti-proxy control, so a second student from the same device is refused
-  with `device_already_used` (409). `location_unverified: true` now means the
-  fix landed further out than the phone's own reported error can explain
-  (allowance capped at 250 m past the radius); inside that allowance it is
-  simply accepted. Flagged rows report as `web_only_unverified` with reason
-  `location_unverified`.
+  `POST /checkins` now requires `lat`, `lng`, and `accuracy` as student
+  evidence, plus a valid session code and `device_hash`. The code is decisive:
+  an outside-radius fix is recorded, not rejected. Per-session device binding
+  still refuses a second student from the same device with
+  `device_already_used` (409). `location_unverified: true` means the fix landed
+  further out than the phone's own reported error can explain (allowance capped
+  at 250 m past the radius). Web-only rows are classified as `proxy` for
+  lecturer review, with the reason identifying scanner/location evidence. A
+  fingerprint scan of a student record marks the student present even without
+  a web check-in and overrides distant phone GPS; claiming a user account is
+  not required for scanning.
 
   Migration `00008_optional_venue_location.sql` drops NOT NULL from
   `venues`/`lecture_sessions` latitude, longitude, radius_meters and from
@@ -264,10 +265,15 @@ that every phase or database-backed behavior is complete. See
   reusing the first student's `device_hash` was refused `device_already_used`
   (409); a 1.1 km fix with 8 m accuracy was recorded with
   `location_unverified: true` and the session report classified it
-  `web_only_unverified`/`location_unverified` while the unscanned student showed
+  `proxy`/`location_unverified` while the unscanned student showed
   `no_fingerprint`; and `POST /venues/{id}/location` returned 200 for the
   lecturer who teaches at the venue, 403 for a venue they do not teach at, and
   400 `location_too_inaccurate` for a 250 m fix.
+
+  That earlier database run predates mandatory student GPS; its successful
+  no-position web check-in was valid under the old policy. The current required
+  GPS behavior and `proxy` classification have deterministic unit coverage but
+  have not yet been exercised against a live database.
 
   **Bug found by that live run, fixed across the codebase:** pgx encodes a
   `[]byte` parameter as `bytea`, so every raw-SQL audit insert that passed a

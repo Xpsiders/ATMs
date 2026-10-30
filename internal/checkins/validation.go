@@ -29,6 +29,7 @@ const (
 	ErrAlreadyExists     ErrorCode = "already_checked_in"
 	ErrDeviceAlreadyUsed ErrorCode = "device_already_used"
 	ErrInvalidInput      ErrorCode = "invalid_checkin_location"
+	ErrLocationRequired  ErrorCode = "location_required"
 )
 
 type RosterPolicy string
@@ -38,11 +39,8 @@ const (
 	RosterOpen           RosterPolicy = "open"
 )
 
-// Fix is a position reported by the student's own device. A check-in may carry
-// none: the browser can refuse permission, or the handset can fail to get a
-// lock indoors. A missing fix is never a reason to refuse attendance, so this
-// is a pointer rather than three zero-valued floats, which would be
-// indistinguishable from a genuine position off the coast of Ghana.
+// Fix is a position reported by the student's own device. A complete fix is
+// required for web check-in but never gates it by distance from the venue.
 type Fix struct {
 	Latitude       float64
 	Longitude      float64
@@ -50,8 +48,7 @@ type Fix struct {
 }
 
 // VenueCentre is a venue's stored position. A venue may have none, in which
-// case there is nothing to measure a check-in against and location simply does
-// not contribute to the decision.
+// case there is no venue distance to compare with the required student fix.
 type VenueCentre struct {
 	Latitude     float64
 	Longitude    float64
@@ -73,14 +70,13 @@ type Input struct {
 }
 
 type Result struct {
-	// DistanceMeters is nil when there was no fix, no venue centre, or both,
-	// so nothing could be measured.
+	// DistanceMeters is nil when there is no venue centre to measure against.
 	DistanceMeters *float64
 	AccuracyPoor   bool
 	// LocationUnverified is set when a position was compared against the venue
 	// and landed further out than the phone's own reported error can explain.
-	// The check-in is still recorded and reported as web_only_unverified
-	// rather than refused.
+	// The check-in is still recorded; reports can flag web-only attendance as
+	// a proxy risk until a matching fingerprint scan confirms presence.
 	LocationUnverified bool
 	Late               bool
 	OnRoster           bool
@@ -112,14 +108,17 @@ func HaversineMeters(lat1, lon1, lat2, lon2 float64) (float64, error) {
 
 // Validate decides a check-in. Presence is proved by the session being open,
 // the rotating code being valid, and the device not already being bound to
-// another student in this session. Location contributes evidence only: it can
-// mark a check-in unverified for the lecturer, but it can never refuse one.
+// another student in this session. Location contributes evidence only and
+// cannot refuse an otherwise valid check-in.
 func Validate(input Input) (Result, ErrorCode) {
 	if !input.SessionOpen {
 		return Result{}, ErrSessionClosed
 	}
 	if !input.CodeValid {
 		return Result{}, ErrWrongCode
+	}
+	if input.Fix == nil {
+		return Result{}, ErrLocationRequired
 	}
 	policy := input.RosterPolicy
 	if policy == "" {
@@ -134,6 +133,9 @@ func Validate(input Input) (Result, ErrorCode) {
 	if input.Fix != nil &&
 		(math.IsNaN(input.Fix.AccuracyMeters) || math.IsInf(input.Fix.AccuracyMeters, 0) ||
 			input.Fix.AccuracyMeters < 0) {
+		return Result{}, ErrInvalidInput
+	}
+	if input.Fix != nil && !validCoordinate(input.Fix.Latitude, input.Fix.Longitude) {
 		return Result{}, ErrInvalidInput
 	}
 	if input.Venue != nil &&

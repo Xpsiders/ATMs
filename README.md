@@ -154,41 +154,44 @@ docker compose run --rm seed seed --update-venues
 A normal seed run also resets the known fixture venues and historical session
 snapshots.
 
-## When a student's location does not match the venue
+## Student web check-in and proxy review
 
-Nothing refuses a check-in on location. A student on a cheap or indoor-bound
-handset was being denied attendance for a hardware limit they cannot fix, so
-the position is now recorded as evidence and, where it cannot be explained,
-flagged for the lecturer:
+Web check-in requires the valid session code and a complete browser GPS fix
+(latitude, longitude, and accuracy). The code remains decisive: a valid code
+records the web check-in even when the reported position is outside the venue
+radius. Location is evidence for the lecturer, not a second attendance gate:
 
 | Fix | Outcome |
 |---|---|
-| Inside the venue radius | Recorded normally. |
-| Outside the radius, but the phone's own reported accuracy covers the gap (capped at 250 metres past it) | Recorded normally. |
-| Further out than the accuracy can explain | Recorded, with `location_unverified: true` in the response. The session report shows the row as `web_only_unverified` with reason `location_unverified` for the lecturer to confirm. |
-| No position at all (permission denied, or the venue has no centre) | Recorded, with `distance_meters: null`. |
+| Inside the venue radius | Recorded; if no matching fingerprint scan exists, the report classifies it as `proxy` with reason `no_fingerprint`. |
+| Outside the radius, but the phone's own reported accuracy covers the gap (capped at 250 metres past it) | Recorded; GPS does not reject a valid code. A web-only row is classified as `proxy`. |
+| Further out than the accuracy can explain | Recorded with `location_unverified: true`; a web-only row is classified as `proxy` with reason `location_unverified`. |
+| No position, or GPS permission denied | Web check-in is rejected with `location_required`. |
+| Venue has no saved centre | The required GPS fix is recorded; `distance_meters` is null because there is no venue point to compare. Web-only attendance is still classified as `proxy`. |
 
-What stops a student checking in for absent friends is **device binding**, not
-distance: one device may record at most one student per session, so a second
-student from the same phone is refused with `device_already_used` (409).
-`device_hash` is required on `POST /checkins` for that reason.
+Web-only attendance keeps status `present` or `late` but is visibly classified
+as `proxy` for lecturer review, regardless of whether a scanner was available.
+This is a risk classification rather than proof of who submitted the request.
+The session code remains required, and **device binding** means one device may
+record at most one student per session; a second student from the same phone
+is refused with `device_already_used` (409). `device_hash` is required on
+`POST /checkins` for that reason.
 
-A student whose fix was flagged still has two routes to a clean record, both
-already in the API:
+A matching fingerprint scan confirms the student is present even when their
+phone's GPS is outside the venue radius. Fingerprint scanning requires an
+existing `student_records` entry (the scanner slot references that record);
+the student does not need to have claimed a separate user account. A scan can
+also mark a student present without a web check-in. The attendance report then
+uses `present_no_web_log`; a matching web check-in plus scan is `verified`.
 
-1. **The fingerprint scanner in the room.** A matching scan verifies them
-   outright — a biometric at the venue is stronger evidence than any GPS fix,
-   so a scan upgrades a weak or missing web check-in to `verified`.
-2. **A lecturer override.** After the class ends,
-   `POST /sessions/{id}/overrides/bulk` sets the status for one or many students
-   with a recorded reason code and an audit entry (it returns 409 while the
-   session is still open). An override takes precedence over every other
-   signal, so it also clears a `location_unverified` flag.
+After the class ends, `POST /sessions/{id}/overrides/bulk` sets the status for
+one or many students with a recorded reason code and an audit entry (it returns
+409 while the session is still open). An override takes precedence over every
+other signal.
 
-If a whole room comes back `location_unverified`, the venue's stored centre is
-wrong rather than the students' phones. The lecturer's next class there fixes it
-on its own, or they can recalibrate it immediately with
-`POST /venues/{id}/location` from inside the room.
+If a whole room comes back `location_unverified`, the venue's stored centre may
+be wrong. The lecturer's next class there can refresh it, or they can
+recalibrate immediately with `POST /venues/{id}/location` from inside the room.
 
 ## Commands
 

@@ -97,7 +97,8 @@ func TestCheckinClosedNotOnRosterDeviceReuseAndRaceDuplicate(t *testing.T) {
 	currentCode := sessions.DeriveCode(secret, session.ID, 2)
 	store := &fakeCheckinStore{found: false, session: session, inserted: true}
 	service := newCheckinService(t, store, clock)
-	request := checkins.Request{SessionID: session.ID, Code: currentCode, DeviceHash: "device-aaaa"}
+	request := checkins.Request{SessionID: session.ID, Code: currentCode, Latitude: ptr(0),
+		Longitude: ptr(0), Accuracy: ptr(5), DeviceHash: "device-aaaa"}
 
 	if _, code, _ := service.Checkin(context.Background(), "i1", "s1", request); code != checkins.ErrSessionClosed {
 		t.Fatalf("closed session code = %q", code)
@@ -128,6 +129,23 @@ func TestCheckinClosedNotOnRosterDeviceReuseAndRaceDuplicate(t *testing.T) {
 	noDevice.DeviceHash = ""
 	if _, code, _ := service.Checkin(context.Background(), "i1", "s1", noDevice); code != checkins.ErrInvalidInput {
 		t.Fatalf("missing device hash error = %q", code)
+	}
+
+	for _, missingFix := range []struct {
+		name string
+		edit func(*checkins.Request)
+	}{
+		{name: "latitude", edit: func(request *checkins.Request) { request.Latitude = nil }},
+		{name: "longitude", edit: func(request *checkins.Request) { request.Longitude = nil }},
+		{name: "accuracy", edit: func(request *checkins.Request) { request.Accuracy = nil }},
+	} {
+		t.Run("missing "+missingFix.name, func(t *testing.T) {
+			incomplete := request
+			missingFix.edit(&incomplete)
+			if _, code, _ := service.Checkin(context.Background(), "i1", "s1", incomplete); code != checkins.ErrLocationRequired {
+				t.Fatalf("missing %s error = %q", missingFix.name, code)
+			}
+		})
 	}
 
 	store.inserted = false

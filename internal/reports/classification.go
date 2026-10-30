@@ -8,14 +8,10 @@ import (
 type Classification string
 
 const (
-	Verified Classification = "verified"
-	// There is deliberately no "suspected proxy" classification. Nothing the
-	// server observes distinguishes a proxy from a student whose scan failed,
-	// so an unverified row is surfaced for the lecturer to judge instead of
-	// being labelled an accusation the evidence cannot support.
-	PresentNoWebLog   Classification = "present_no_web_log"
-	WebOnlyUnverified Classification = "web_only_unverified"
-	Absent            Classification = "absent"
+	Verified        Classification = "verified"
+	PresentNoWebLog Classification = "present_no_web_log"
+	Proxy           Classification = "proxy"
+	Absent          Classification = "absent"
 )
 
 type OfflineInterval struct {
@@ -202,8 +198,7 @@ type Record struct {
 	ScannerCoverage  ScannerCoverage
 	// LocationUnverified marks a web check-in whose position landed further
 	// from the venue than the phone's own reported error can explain. It
-	// sharpens the reason on an unverified row; it is not an accusation on its
-	// own, and it never refuses the check-in.
+	// sharpens the reason on a proxy row but never refuses the check-in.
 	LocationUnverified bool
 }
 
@@ -232,25 +227,17 @@ func Classify(record Record) Outcome {
 	switch {
 	case record.HasWebCheckin && record.HasFingerprint:
 		outcome.Classification, outcome.Status = Verified, webAttendanceStatus(record.WebStatus)
-	case record.HasWebCheckin && !record.ScannerAvailable:
-		outcome.Classification, outcome.Status = Verified, webAttendanceStatus(record.WebStatus)
 	case record.HasWebCheckin:
 		outcome.Status = webAttendanceStatus(record.WebStatus)
-		if record.ScannerCoverage.State == CoverageNone {
-			outcome.Classification, outcome.Reason = WebOnlyUnverified, "scanner_unavailable"
+		outcome.Classification = Proxy
+		if !record.ScannerAvailable || record.ScannerCoverage.State == CoverageNone {
+			outcome.Reason = "scanner_unavailable"
 		} else if isOfflineCheckin(record.WebCheckinAt, record.ScannerCoverage.OfflineIntervals) {
-			outcome.Classification, outcome.Reason = WebOnlyUnverified, "scanner_offline"
+			outcome.Reason = "scanner_offline"
 		} else if record.LocationUnverified {
-			outcome.Classification, outcome.Reason = WebOnlyUnverified, "location_unverified"
+			outcome.Reason = "location_unverified"
 		} else {
-			// A working scanner was there and the student did not use it. That
-			// is worth the lecturer's attention, but it is not evidence of a
-			// proxy: the check-in still passed a live rotating code and the
-			// device binding that stops one handset signing in a row of
-			// friends. Queues, a finger the sensor will not read, and a
-			// student who simply did not know to scan all look identical from
-			// here, so the row is reported as unverified rather than accused.
-			outcome.Classification, outcome.Reason = WebOnlyUnverified, "no_fingerprint"
+			outcome.Reason = "no_fingerprint"
 		}
 	case record.HasFingerprint:
 		outcome.Classification, outcome.Status = PresentNoWebLog, "present"
